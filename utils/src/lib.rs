@@ -1,2 +1,2 @@
-pub mod decimal;
-pub mod fixed_string;
+pub mod bstr;
+pub mod fixed_point;

@@ -1,5 +1,12 @@
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+
 [workspace]
 resolver = "2"
-members = [
+members = [ "framework",
     "utils",
 ]
