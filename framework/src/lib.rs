@@ -1,59 +1,65 @@
-//use std::ops::Index;
-//use std::ops::IndexMut;
-//use std::ops::Deref;
-//use std::ops::DerefMut;
-//
-//struct Dag<T>(T);
-//
-//impl<T> Dag<T> {
-//    fn with<M, H: Handler<M>>(self, handler: H) -> (Node<H>, Dag<(H, Self)>) {
-//
-//        todo!()
-//    }
-//}
-//
-//impl<T, U> Deref for Dag<(T, U)> {
-//    type Target = U;
-//
-//    fn deref(&self) -> &Self::Target {
-//        &self.0.1
-//    }
-//
-//}
-//
-////impl<T, U> DerefMut for Dag<(T, U)> {
-////    fn deref_mut(&mut self) -> &mut Self::Target {
-////        &mut self.0.1
-////    }
-////}
-//
-//impl<H, T, U> Index<Node<H>> for Dag<(T, U)>
-//{
-//    type Output = H;
-//
-//    fn index(&self, index: Node<H>) -> &Self::Output {
-//        index.get(self)
-//    }
-//}
-//
-////impl<H, T, U> IndexMut<Node<H>> for Dag<(T, U)> {
-////    fn index_mut(&mut self, index: Node<H>) -> &mut Self::Output {
-////        todo!()
-////    }
-////}
-//
-//#[derive(Clone, Copy)]
-//struct Node<H>(std::marker::PhantomData<H>);
-//
-//impl<H> Node<H> {
-//    fn get<U>(self, dag: &Dag<(H, U)>) -> &H {
-//        &dag.0.0
-//    }
-//}
-//
-//
-//trait Handler<Msg> {
-//    type Context<U>;
-//
-//    fn on_message<U>(&mut self, ctx: &mut Self::Context<U>, msg: Msg);
-//}
+#![feature(min_specialization)]
+
+struct Message;
+
+struct Component;
+
+impl Component {
+    pub fn do_something(&mut self, msg: &Message) {
+        panic!("Hello");
+    }
+}
+
+impl Component {
+    pub fn on_message<Msg>(&mut self, msg: &Msg) {
+        trait Dispatcher<M> {
+            fn dispatch(&self, r: &mut Component);
+        }
+
+        impl<M> Dispatcher<M> for M {
+            default fn dispatch(&self, _r: &mut Component) {}
+        }
+
+        impl<'a, M> Dispatcher<&'a M> for &'a M {
+            fn dispatch(&self, r: &mut Component) {
+                (**self).dispatch(r);
+            }
+        }
+
+        impl<'a, M> Dispatcher<&'a mut M> for &'a mut M {
+            fn dispatch(&self, r: &mut Component) {
+                (**self).dispatch(r);
+            }
+        }
+
+        impl Dispatcher<Message> for Message {
+            fn dispatch(&self, r: &mut Component) {
+                r.do_something(self);
+            }
+        }
+
+        <Msg as Dispatcher<Msg>>::dispatch(msg, self);
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn test_receives() {
+
+        fn foo<T>(t: &T) {
+            Component.on_message(&t);
+        }
+
+        foo(&Message);
+    }
+
+    #[test]
+    fn test_not_receives() {
+
+    }
+}
