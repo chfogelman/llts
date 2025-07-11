@@ -1,41 +1,47 @@
 #![feature(min_specialization)]
 
 struct Message;
+struct Message2;
 
-struct Component;
+struct ExampleComponent;
 
-impl Component {
-    pub fn do_something(&mut self, msg: &Message) {
-        panic!("Hello");
-    }
+trait Component {
+    fn on_message<Msg>(&mut self, msg: &Msg);
 }
 
-impl Component {
-    pub fn on_message<Msg>(&mut self, msg: &Msg) {
+impl Component for ExampleComponent {
+    fn on_message<Msg>(&mut self, msg: &Msg) {
         trait Dispatcher<M> {
-            fn dispatch(&self, r: &mut Component);
+            fn dispatch(&self, r: &mut ExampleComponent);
         }
 
         impl<M> Dispatcher<M> for M {
-            default fn dispatch(&self, _r: &mut Component) {}
+            #[inline]
+            default fn dispatch(&self, _r: &mut ExampleComponent) {
+                panic!("Hello");
+            }
         }
 
         impl<'a, M> Dispatcher<&'a M> for &'a M {
-            fn dispatch(&self, r: &mut Component) {
+            #[inline]
+            fn dispatch(&self, r: &mut ExampleComponent) {
                 (**self).dispatch(r);
             }
         }
 
         impl<'a, M> Dispatcher<&'a mut M> for &'a mut M {
-            fn dispatch(&self, r: &mut Component) {
+            #[inline]
+            fn dispatch(&self, r: &mut ExampleComponent) {
                 (**self).dispatch(r);
             }
         }
 
         impl Dispatcher<Message> for Message {
-            fn dispatch(&self, r: &mut Component) {
-                r.do_something(self);
-            }
+            fn dispatch(&self, r: &mut ExampleComponent) {}
+        }
+
+        impl Dispatcher<Message2> for Message2 {
+            fn dispatch(&self, r: &mut ExampleComponent) {}
         }
 
         <Msg as Dispatcher<Msg>>::dispatch(msg, self);
@@ -48,18 +54,20 @@ mod test {
     use super::*;
 
     #[test]
-    #[should_panic]
     fn test_receives() {
 
         fn foo<T>(t: &T) {
-            Component.on_message(&t);
+            ExampleComponent.on_message(&t);
         }
 
         foo(&Message);
+        foo(&Message2);
     }
 
     #[test]
+    #[should_panic]
     fn test_not_receives() {
-
+        struct Message;
+        ExampleComponent.on_message(&Message);
     }
 }
