@@ -1,51 +1,23 @@
 #![feature(min_specialization)]
 
-struct Message;
-struct Message2;
-
-struct ExampleComponent;
-
-trait Component {
+pub trait Component {
     fn on_message<Msg>(&mut self, msg: &Msg);
 }
 
-impl Component for ExampleComponent {
+impl<T> Component for T {
+    #[inline]
     fn on_message<Msg>(&mut self, msg: &Msg) {
-        trait Dispatcher<M> {
-            fn dispatch(&self, r: &mut ExampleComponent);
-        }
-
-        impl<M> Dispatcher<M> for M {
-            #[inline]
-            default fn dispatch(&self, _r: &mut ExampleComponent) {
-                panic!("Hello");
-            }
-        }
-
-        impl<'a, M> Dispatcher<&'a M> for &'a M {
-            #[inline]
-            fn dispatch(&self, r: &mut ExampleComponent) {
-                (**self).dispatch(r);
-            }
-        }
-
-        impl<'a, M> Dispatcher<&'a mut M> for &'a mut M {
-            #[inline]
-            fn dispatch(&self, r: &mut ExampleComponent) {
-                (**self).dispatch(r);
-            }
-        }
-
-        impl Dispatcher<Message> for Message {
-            fn dispatch(&self, r: &mut ExampleComponent) {}
-        }
-
-        impl Dispatcher<Message2> for Message2 {
-            fn dispatch(&self, r: &mut ExampleComponent) {}
-        }
-
-        <Msg as Dispatcher<Msg>>::dispatch(msg, self);
+        <T as Handler<Msg>>::handle(self, msg);
     }
+}
+
+pub trait Handler<Msg> {
+    fn handle(&mut self, msg: &Msg);
+}
+
+impl<Msg, T> Handler<Msg> for T {
+    #[inline]
+    default fn handle(&mut self, _: &Msg) {}
 }
 
 #[cfg(test)]
@@ -53,21 +25,37 @@ mod test {
 
     use super::*;
 
+    struct ExampleComponent;
+    struct Message;
+    struct Message2;
+
+    impl<Msg> Handler<Msg> for ExampleComponent {
+        default fn handle(&mut self, _: &Msg) {
+            panic!("Hello");
+        }
+    }
+
+    impl Handler<Message> for ExampleComponent {
+        fn handle(&mut self, _: &Message) {}
+    }
+
+    impl Handler<Message2> for ExampleComponent {
+        fn handle(&mut self, _: &Message2) {}
+    }
+
     #[test]
     fn test_receives() {
-
-        fn foo<T>(t: &T) {
-            ExampleComponent.on_message(&t);
-        }
-
-        foo(&Message);
-        foo(&Message2);
+        let mut ex1 = ExampleComponent;
+        ex1.on_message(&Message);
+        ex1.on_message(&Message2);
+        ex1.on_message(&mut Message);
     }
 
     #[test]
     #[should_panic]
     fn test_not_receives() {
-        struct Message;
-        ExampleComponent.on_message(&Message);
+        let mut ex = ExampleComponent;
+        struct Foo;
+        ex.on_message(&Foo);
     }
 }

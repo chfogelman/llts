@@ -1,8 +1,7 @@
 use zerocopy::*;
 
 #[repr(transparent)]
-#[derive(IntoBytes, FromZeros, KnownLayout, Immutable, Unaligned)]
-#[derive(Clone, Copy, Eq)]
+#[derive(IntoBytes, FromZeros, KnownLayout, Immutable, Unaligned, Clone, Copy, Eq)]
 pub struct FixedString<const N: usize>([u8; N]);
 
 impl<const N: usize> FixedString<N> {
@@ -76,10 +75,12 @@ impl<const N: usize> std::fmt::Debug for FixedString<N> {
 }
 
 impl<T, const N: usize> core::cmp::PartialEq<T> for FixedString<N>
-where T: AsRef<[u8]> + ?Sized
+where
+    T: AsRef<[u8]> + ?Sized,
 {
     fn eq(&self, other: &T) -> bool {
-        self.bytes().eq(other.as_ref().iter().copied().take_while(|&b| b != 0))
+        self.bytes()
+            .eq(other.as_ref().iter().copied().take_while(|&b| b != 0))
     }
 }
 
@@ -96,10 +97,12 @@ impl<const N: usize, const M: usize> core::cmp::PartialOrd<FixedString<N>> for F
 }
 
 impl<T, const N: usize> core::cmp::PartialOrd<T> for FixedString<N>
-where T: AsRef<[u8]> + ?Sized
+where
+    T: AsRef<[u8]> + ?Sized,
 {
     fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
-        self.bytes().partial_cmp(other.as_ref().iter().copied().take_while(|&b| b != 0))
+        self.bytes()
+            .partial_cmp(other.as_ref().iter().copied().take_while(|&b| b != 0))
     }
 }
 
@@ -121,7 +124,7 @@ mod test {
         assert_eq!(hello, "Hello world");
         assert_eq!(FixedString(*b"Hello\0world"), FixedString(*b"Hello"));
     }
-    
+
     #[test]
     fn test_truncated() {
         assert_eq!(FixedString::<5>::from_truncated("Hel"), "Hel");
@@ -132,14 +135,23 @@ mod test {
 
     #[test]
     fn test_fmt() {
-        assert_eq!(format!("{}", FS::try_from("Hello world").unwrap()), "Hello world");
+        assert_eq!(
+            format!("{}", FS::try_from("Hello world").unwrap()),
+            "Hello world"
+        );
     }
 
     #[test]
     fn test_cmp() {
-        assert_eq!(FS::from_truncated("Hello world"), FS::from_truncated("Hello world\0xyz"));
+        assert_eq!(
+            FS::from_truncated("Hello world"),
+            FS::from_truncated("Hello world\0xyz")
+        );
         assert_eq!(FS::try_from("Hello world").unwrap(), "Hello world\0xyz");
-        assert_ne!(FS::try_from("Hello world").unwrap(), FS::from_truncated("Hello world!"));
+        assert_ne!(
+            FS::try_from("Hello world").unwrap(),
+            FS::from_truncated("Hello world!")
+        );
         assert_ne!(FS::try_from("Hello world").unwrap(), "Hello world!");
         assert!(FS::try_from("Hello worlc").unwrap() < "Hello world\0xyz");
         assert!(FS::try_from("Hello worl\0z").unwrap() < "Hello world\0xyz");
