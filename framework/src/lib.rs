@@ -13,12 +13,12 @@ pub trait Handler<Msg> {
     fn handle(&mut self, ctx: &mut impl Component, msg: &Msg);
 }
 
-trait Dispatcher<C: Component> {
-    fn dispatch(&self, component: &mut C);
+trait Dispatcher<T> {
+    fn dispatch(&self, component: &mut T);
 }
 
-impl<C, Msg> Dispatcher<C> for Msg {
-    fn dispatch(&self, component: &mut C) {
+impl<C, Others, Msg> Dispatcher<Thread<C, Others>> for Msg {
+    fn dispatch(&self, component: &mut Thread<C, Others>) {
         component.publish(self)
     }
 }
@@ -58,16 +58,22 @@ impl<T, U> Component for ChainedComponent<T, U> {
 
 pub struct Thread<C, Others> {
     component: C,
-    in_q: Receiver<Arc<dyn Dispatcher<C>>>,
+    in_q: Receiver<Arc<dyn Dispatcher<Self>>>,
     out_qs: Others,
 }
 
 impl<C, Others> Thread<C, Others> {
-    fn new(component: C, in_q: Receiver<Arc<dyn Dispatcher<C>>>, out_qs: Others) -> Self {
+    fn new(component: C, in_q: Receiver<Arc<dyn Dispatcher<Self>>>, out_qs: Others) -> Self {
         Thread {
             component,
             in_q,
             out_qs,
+        }
+    }
+
+    fn poll(&mut self) {
+        while let Ok(msg) = self.in_q.recv() {
+            msg.dispatch(self);
         }
     }
 }
