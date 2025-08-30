@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub trait Component {
-    fn publish<Msg>(&mut self, msg: &Msg);
+    fn publish<Msg: 'static>(&mut self, msg: Msg);
 }
 
 pub trait Handler<Msg> {
@@ -41,31 +41,32 @@ impl<Msg, T> Handler<Msg> for &mut T {
 
 /// No-op component implementation for `()`
 impl Component for () {
-    fn publish<Msg>(&mut self, _msg: &Msg) {}
+    fn publish<Msg>(&mut self, _msg: Msg) {}
 }
 
 pub struct ChainedComponent<T, U>(T, U);
-struct DownstreamComponents<'a, T, U>(&'a mut T, &'a mut U);
 
 impl<Msg, T, U> Handler<Msg> for ChainedComponent<T, U> {
     fn handle(&mut self, ctx: &mut impl Component, msg: &Msg) {
-        let mut downstream = DownstreamComponents(&mut *ctx, &mut self.0);
-        <U as Handler<Msg>>::handle(&mut self.1, &mut downstream, msg);
-        <T as Handler<Msg>>::handle(&mut self.0, ctx, msg);
+        let mut downstream = DownstreamComponents(&mut self.1, &mut *ctx);
+        <T as Handler<Msg>>::handle(&mut self.0, &mut downstream, msg);
+        <U as Handler<Msg>>::handle(&mut self.1, ctx, msg);
     }
 }
+
+struct DownstreamComponents<'a, T, U>(&'a mut T, &'a mut U);
 
 impl<'a, T, U> Component for DownstreamComponents<'a, T, U>
 where
-    T: Component,
+    U: Component,
 {
-    fn publish<Msg>(&mut self, msg: &Msg) {
-        <U as Handler<Msg>>::handle(self.1, self.0, msg);
-        self.0.publish(msg);
+    fn publish<Msg: 'static>(&mut self, msg: Msg) {
+        <T as Handler<Msg>>::handle(self.0, self.1, &msg);
+        self.1.publish(msg);
     }
 }
 
-pub struct Thread<C, Others> {
+pub struct Thread<C, Others: Component> {
     component: C,
     in_q: Receiver<Arc<dyn Dispatcher<Self>>>,
     out_qs: Others,
@@ -195,10 +196,21 @@ macro_rules! impl_build_threads {
     ($($ts:ident,)*) => {};
 }
 
+macro_rules! chain_components_impl {
+    ($first:expr) => { $first };
+    ($last:expr, $($rest:expr),+) => { ChainedComponent(chain_components!($($rest),+), $last) };
+}
+
+macro_rules! reverse_to_chained {
+    ((), ($($all:expr,)+)) => { chain_components_impl!($($all),+) };
+    (($first:expr $(,$rest:expr)*), ($($all:expr,)*)) => {
+        reverse_to_chained!(($($rest),*), ($first, $($all,)*))
+    };
+}
+
 #[macro_export]
 macro_rules! chain_components {
-    ($first:expr) => { $first };
-    ($first:expr, $($rest:expr),+) => { ChainedComponent($first, chain_components!($($rest),+)) };
+    ($($components:expr),*) => { reverse_to_chained!(($($components),*), ()) }
 }
 
 #[cfg(test)]
@@ -221,7 +233,7 @@ mod test {
                 msg.1,
                 width = msg.2
             );
-            ctx.publish(&Message1("Ex1", self.0, msg.2 + 4));
+            ctx.publish(Message1("Ex1", self.0, msg.2 + 4));
         }
     }
 
@@ -235,7 +247,7 @@ mod test {
                 msg.1,
                 width = msg.2
             );
-            ctx.publish(&Message0("Ex1", self.0, msg.2 + 4));
+            ctx.publish(Message0("Ex1", self.0, msg.2 + 4));
         }
     }
 
@@ -249,7 +261,7 @@ mod test {
                 msg.1,
                 width = msg.2
             );
-            ctx.publish(&Message0("Ex2", self.0, msg.2 + 4));
+            ctx.publish(Message0("Ex2", self.0, msg.2 + 4));
         }
     }
 
@@ -263,8 +275,8 @@ mod test {
             }
         }
         impl Component for Tester {
-            fn publish<Msg>(&mut self, msg: &Msg) {
-                <Tester as Handler<Msg>>::handle(self, &mut (), msg);
+            fn publish<Msg>(&mut self, msg: Msg) {
+                <Self as Handler<Msg>>::handle(self, &mut (), &msg);
             }
         }
 
@@ -292,12 +304,12 @@ mod test {
         }
 
         impl Component for Tester {
-            fn publish<Msg>(&mut self, msg: &Msg) {
-                <Self as Handler<Msg>>::handle(self, &mut (), msg);
+            fn publish<Msg>(&mut self, msg: Msg) {
+                <Self as Handler<Msg>>::handle(self, &mut (), &msg);
             }
         }
 
-        let mut foo = chain_components!(Ex1("first"), Ex2("second"), Ex2("third"));
+        let mut foo = chain_components!(Ex2("first"), Ex2("second"), Ex1("third"));
         let mut tester = Tester(0, 0);
         foo.handle(&mut tester, &Message0("init", "init", 0));
         assert_eq!(tester.0, 3);
