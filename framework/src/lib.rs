@@ -3,7 +3,7 @@
 #![allow(unused_imports)] // FIXME
 
 use std::sync::Arc;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub trait Component {
     fn publish<Msg>(&mut self, msg: &Msg);
@@ -14,25 +14,16 @@ pub trait Handler<Msg> {
 }
 
 trait Dispatcher<T> {
-    fn dispatch(&self, component: &mut T);
+    fn dispatch(&self, thread: &mut T);
 }
 
-impl<C, Others, Msg> Dispatcher<Thread<C, Others>> for Msg {
-    fn dispatch(&self, component: &mut Thread<C, Others>) {
-        component.publish(self)
+impl<C, Others, Msg> Dispatcher<Thread<C, Others>> for Msg
+where
+    Others: Component,
+{
+    fn dispatch(&self, thread: &mut Thread<C, Others>) {
+        <C as Handler<Msg>>::handle(&mut thread.component, &mut thread.out_qs, self);
     }
-}
-
-impl<T> Component for T {
-    #[inline]
-    default fn publish<Msg>(&mut self, msg: &Msg) {
-        <T as Handler<Msg>>::handle(self, &mut (), msg);
-    }
-}
-
-impl Component for () {
-    #[inline]
-    fn publish<Msg>(&mut self, _: &Msg) {}
 }
 
 /// No-op default handler implementation for `T`
@@ -41,18 +32,36 @@ impl<Msg, T> Handler<Msg> for T {
     default fn handle(&mut self, _ctx: &mut impl Component, _: &Msg) {}
 }
 
-/// No-op handler implementation for `()`
-impl<Msg> Handler<Msg> for () {
+impl<Msg, T> Handler<Msg> for &mut T {
     #[inline]
-    fn handle(&mut self, _ctx: &mut impl Component, _: &Msg) {}
+    fn handle(&mut self, ctx: &mut impl Component, msg: &Msg) {
+        (**self).handle(ctx, msg);
+    }
+}
+
+/// No-op component implementation for `()`
+impl Component for () {
+    fn publish<Msg>(&mut self, _msg: &Msg) {}
 }
 
 pub struct ChainedComponent<T, U>(T, U);
+struct DownstreamComponents<'a, T, U>(&'a mut T, &'a mut U);
 
-impl<T, U> Component for ChainedComponent<T, U> {
+impl<Msg, T, U> Handler<Msg> for ChainedComponent<T, U> {
+    fn handle(&mut self, ctx: &mut impl Component, msg: &Msg) {
+        let mut downstream = DownstreamComponents(&mut *ctx, &mut self.0);
+        <U as Handler<Msg>>::handle(&mut self.1, &mut downstream, msg);
+        <T as Handler<Msg>>::handle(&mut self.0, ctx, msg);
+    }
+}
+
+impl<'a, T, U> Component for DownstreamComponents<'a, T, U>
+where
+    T: Component,
+{
     fn publish<Msg>(&mut self, msg: &Msg) {
-        self.0.handle(&mut self.1, msg);
-        self.1.publish(msg);
+        <U as Handler<Msg>>::handle(self.1, self.0, msg);
+        self.0.publish(msg);
     }
 }
 
@@ -62,7 +71,7 @@ pub struct Thread<C, Others> {
     out_qs: Others,
 }
 
-impl<C, Others> Thread<C, Others> {
+impl<C, Others: Component> Thread<C, Others> {
     fn new(component: C, in_q: Receiver<Arc<dyn Dispatcher<Self>>>, out_qs: Others) -> Self {
         Thread {
             component,
@@ -78,7 +87,11 @@ impl<C, Others> Thread<C, Others> {
     }
 }
 
-type PreThreadTriplet<C> = (C, Sender<Arc<dyn Dispatcher<C>>>, Receiver<Arc<dyn Dispatcher<C>>>);
+type PreThreadTriplet<C> = (
+    C,
+    Sender<Arc<dyn Dispatcher<C>>>,
+    Receiver<Arc<dyn Dispatcher<C>>>,
+);
 
 fn get_channel<C>(component: C) -> PreThreadTriplet<C> {
     let (tx, rx) = channel();
@@ -143,7 +156,7 @@ macro_rules! impl_get_senders {
     };
 }
 
-impl_get_senders!{A, B, C, D, E, F, G, H, I, J,}
+impl_get_senders! {A, B, C, D, E, F, G, H, I, J,}
 
 trait Transpose2 {
     type Output;
@@ -179,13 +192,7 @@ impl_transpose2! {
 }
 
 macro_rules! impl_build_threads {
-    ($($ts:ident,)*) => {}
-}
-
-fn foo() {
-    let x = (get_channel(0i32), get_channel(1u32));
-    let senders = x.get_senders();
-    let x = (x, senders).transpose();
+    ($($ts:ident,)*) => {};
 }
 
 #[macro_export]
@@ -199,50 +206,101 @@ mod test {
 
     use super::*;
 
-    struct Ex1;
-    struct Ex2;
-    struct Message;
-    struct Message2;
+    struct Ex1(&'static str);
+    struct Ex2(&'static str);
+    struct Message0(&'static str, &'static str, usize);
+    struct Message1(&'static str, &'static str, usize);
 
-    impl<Msg> Handler<Msg> for Ex1 {
-        default fn handle(&mut self, _ctx: &mut impl Component, _: &Msg) {
-            panic!("Ex1 panicked");
+    impl Handler<Message0> for Ex1 {
+        fn handle(&mut self, ctx: &mut impl Component, msg: &Message0) {
+            println!(
+                "{:width$}Ex1({}) received Message0({}, {})",
+                "",
+                self.0,
+                msg.0,
+                msg.1,
+                width = msg.2
+            );
+            ctx.publish(&Message1("Ex1", self.0, msg.2 + 4));
         }
     }
 
-    impl Handler<Message> for Ex1 {
-        fn handle(&mut self, _ctx: &mut impl Component, _: &Message) {
-            println!("Ex1");
+    impl Handler<Message1> for Ex1 {
+        fn handle(&mut self, ctx: &mut impl Component, msg: &Message1) {
+            println!(
+                "{:width$}Ex1({}) received Message1({}, {})",
+                "",
+                self.0,
+                msg.0,
+                msg.1,
+                width = msg.2
+            );
+            ctx.publish(&Message0("Ex1", self.0, msg.2 + 4));
         }
     }
 
-    impl Handler<Message2> for Ex1 {
-        fn handle(&mut self, _ctx: &mut impl Component, _: &Message2) {
-            println!("Ex1");
+    impl Handler<Message0> for Ex2 {
+        fn handle(&mut self, ctx: &mut impl Component, msg: &Message0) {
+            println!(
+                "{:width$}Ex2({}) received Message0({}, {})",
+                "",
+                self.0,
+                msg.0,
+                msg.1,
+                width = msg.2
+            );
+            ctx.publish(&Message0("Ex2", self.0, msg.2 + 4));
         }
     }
 
     #[test]
     fn test_receives() {
-        let mut ex1 = Ex1;
-        ex1.publish(&Message);
-        ex1.publish(&Message2);
-        ex1.publish(&mut Message);
+        let mut ex1 = Ex1("Ex1");
+        struct Tester(bool);
+        impl Handler<Message1> for Tester {
+            fn handle(&mut self, _ctx: &mut impl Component, _msg: &Message1) {
+                self.0 = true;
+            }
+        }
+        impl Component for Tester {
+            fn publish<Msg>(&mut self, msg: &Msg) {
+                <Tester as Handler<Msg>>::handle(self, &mut (), msg);
+            }
+        }
+
+        let mut tester = Tester(false);
+        ex1.handle(&mut tester, &Message0("init", "init", 0));
+        assert!(tester.0);
     }
 
     #[test]
-    #[should_panic]
-    fn test_not_receives() {
-        let mut ex = Ex1;
-        struct Foo;
-        ex.publish(&Foo);
-    }
-
-    #[test]
-    #[should_panic = "Ex1 panicked"]
     fn test_chain() {
-        struct Msg;
-        let mut foo = chain_components!(Ex2, Ex2, Ex1);
-        foo.publish(&Msg);
+        struct Tester(i8, i8);
+
+        impl Handler<Message0> for Tester {
+            fn handle(&mut self, _ctx: &mut impl Component, msg: &Message0) {
+                println!("Tester received Message0({})", msg.0);
+                self.0 += 1;
+            }
+        }
+
+        impl Handler<Message1> for Tester {
+            fn handle(&mut self, _ctx: &mut impl Component, msg: &Message1) {
+                println!("Tester received Message1({})", msg.0);
+                self.1 += 1;
+            }
+        }
+
+        impl Component for Tester {
+            fn publish<Msg>(&mut self, msg: &Msg) {
+                <Self as Handler<Msg>>::handle(self, &mut (), msg);
+            }
+        }
+
+        let mut foo = chain_components!(Ex1("first"), Ex2("second"), Ex2("third"));
+        let mut tester = Tester(0, 0);
+        foo.handle(&mut tester, &Message0("init", "init", 0));
+        assert_eq!(tester.0, 3);
+        assert_eq!(tester.1, 4);
     }
 }
