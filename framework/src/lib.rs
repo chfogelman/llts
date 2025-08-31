@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+mod traits;
 
 pub trait Component {
     fn publish<Msg: 'static>(&mut self, msg: Msg);
