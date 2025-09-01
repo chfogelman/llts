@@ -1,27 +1,29 @@
-#![allow(unused_imports)] // FIXME
-use std::marker::PhantomData;
+
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError,};
 use std::thread;
-use crate::{Handler, Consumer, PollEvent};
+use crate::{Consumer, PollEvent, Dispatcher};
 
 pub struct Thread<A: Send + 'static, Others: Hub + 'static> {
     component: A,
-    receiver: <Self as ThreadInfo>::Receiver,
-    handles: <Others as Hub>::Handles<Self>,
+    receiver: Receiver<Arc<dyn Dispatcher<Self>>>,
+    senders: <Others as Hub>::Handles<Self>,
 }
 
-pub trait Dispatcher<T>
-where Self: Send + Sync + 'static
-{
-    fn dispatch(&self, thread: &mut T);
-}
-
-impl<T: ThreadInfo, Msg: Send + Sync + 'static> Dispatcher<T> for Msg
-{
-    fn dispatch(&self, thread: &mut T) {
-        let (component, handles) = thread.get_handler_parts();
-        <T::Component as Handler<Msg>>::handle(component, handles, self);
+impl<C: Send, H: Hub> Thread<C, H> {
+    fn poll(&mut self) {
+        PollEvent.dispatch(self);
+        let next = self.receiver.try_recv();
+        match next {
+            Ok(msg) => {
+                (*msg).dispatch(self)
+            },
+            Err(TryRecvError::Empty) => {},
+            Err(TryRecvError::Disconnected) => {
+                eprintln!("Exiting due to disconnection");
+                std::process::exit(-1);
+            }
+        }
     }
 }
 
@@ -38,17 +40,17 @@ pub trait ThreadInfo {
     type Component: Send + 'static;
     type Channel;
     type Sender;
-    type Handles: Consumer + Send + 'static;
-    type Receiver: 'static;
+    type Handles: Consumer + Send ;
+    type Receiver;
     fn make_channel() -> Channel<Self>;
     fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles);
-    fn spawn(self);
+    fn spawn(self) -> thread::JoinHandle<()>;
 }
 
 type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
 
-impl<A, B: Hub + 'static> ThreadInfo for Thread<A, B>
-    where A: Send + 'static,
+impl<A, B: Hub> ThreadInfo for Thread<A, B>
+    where A: Send,
 {
     type Component = A;
     type Sender = Sender<Arc<dyn Dispatcher<Self>>>;
@@ -61,16 +63,16 @@ impl<A, B: Hub + 'static> ThreadInfo for Thread<A, B>
     }
 
     fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles) {
-        (&mut self.component, &mut self.handles)
+        (&mut self.component, &mut self.senders)
     }
 
-    fn spawn(self) {
+    fn spawn(self) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let mut x = self;
             loop {
-                PollEvent.dispatch(&mut x);
+                x.poll();
             }
-        });
+        })
     }
 }
 
@@ -85,7 +87,7 @@ macro_rules! peel_impl_consumer_for_handles {
 macro_rules! impl_consumer_for_handles {
     () => {};
     ($($ts:ident,)+) => {
-        impl<$($ts: Send + ThreadInfo + 'static,)+> Consumer for ($(ThreadHandle<$ts>,)+) {
+        impl<$($ts: Send + ThreadInfo,)+> Consumer for ($(ThreadHandle<$ts>,)+) {
             #[allow(non_snake_case)]
             fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg) {
                 let msg = Arc::new(msg);
@@ -162,7 +164,7 @@ macro_rules! impl_thread_builder {
                 ($(Thread{
                     component: $ts,
                     receiver: $channels.0,
-                    handles: $channels.1,
+                    senders: $channels.1,
                 },)+)
             }
         }
@@ -190,7 +192,7 @@ macro_rules! peel_channel_builder {
 macro_rules! impl_channel_builder {
     () => {};
     ($($ts:ident,)*) => {
-        impl<$($ts:ThreadInfo + Send + 'static,)*> ChannelBuilder for ($($ts,)*) {
+        impl<$($ts:ThreadInfo + Send ,)*> ChannelBuilder for ($($ts,)*) {
             type Channels = ($(Channel<$ts>,)*);
             fn get_channels() -> Self::Channels {
                 ($(<$ts as ThreadInfo>::make_channel(),)*)
@@ -288,3 +290,27 @@ impl_transpose2! {
     (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1,),
     (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2,)
 }
+
+pub trait ThreadStart {
+    fn start(self) -> Vec<thread::JoinHandle<()>>;
+}
+
+macro_rules! peel_impl_thread_start {
+    ($t:ident, $($ts:ident,)*) => { impl_thread_start!{$($ts,)*} };
+}
+
+macro_rules! impl_thread_start {
+    () => {};
+    ($($ts:ident,)+) => {
+        #[allow(non_snake_case)]
+        impl<$($ts: ThreadInfo,)+> ThreadStart for ($($ts,)+) {
+            fn start(self) -> Vec<thread::JoinHandle<()>> {
+                let ($($ts,)+) = self;
+                vec![$($ts.spawn(),)+]
+            }
+        }
+        peel_impl_thread_start!{$($ts,)+}
+    }
+}
+
+impl_thread_start!{A, B, C, D, E, F, G, H, I, J,}
