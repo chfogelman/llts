@@ -1,12 +1,11 @@
 #![feature(min_specialization)]
 #![allow(dead_code)] // FIXME
-#![allow(unused_imports)] // FIXME
 
 mod thread_builder;
 pub use thread_builder::ThreadBuilder;
+pub use thread_builder::ThreadStart;
 
-use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use thread_builder::ThreadInfo;
 
 pub struct PollEvent;
 
@@ -31,12 +30,26 @@ impl<Msg, T> Handler<Msg> for &mut T {
     }
 }
 
+pub trait Dispatcher<T>
+where Self: Send + Sync 
+{
+    fn dispatch(&self, thread: &mut T);
+}
+
+impl<T: ThreadInfo, Msg: Send + Sync + 'static> Dispatcher<T> for Msg
+{
+    fn dispatch(&self, thread: &mut T) {
+        let (component, handles) = thread.get_handler_parts();
+        <T::Component as Handler<Msg>>::handle(component, handles, self);
+    }
+}
+
 /// No-op Consumer implementation for `()`
 impl Consumer for () {
     fn publish<Msg>(&mut self, _msg: Msg) {}
 }
 
-pub struct ChainedComponent<T, U>(T, U);
+pub struct ChainedComponent<T, U>(pub T, pub U);
 
 impl<Msg, T, U> Handler<Msg> for ChainedComponent<T, U> {
     fn handle(&mut self, ctx: &mut impl Consumer, msg: &Msg) {
@@ -58,21 +71,23 @@ where
     }
 }
 
+#[macro_export]
 macro_rules! chain_components_impl {
     ($first:expr) => { $first };
-    ($last:expr, $($rest:expr),+) => { ChainedComponent(chain_components!($($rest),+), $last) };
+    ($last:expr, $($rest:expr),+) => { $crate::ChainedComponent($crate::chain_components_impl!($($rest),+), $last) };
 }
 
+#[macro_export]
 macro_rules! reverse_to_chained {
-    ((), ($($all:expr,)+)) => { chain_components_impl!($($all),+) };
-    (($first:expr $(,$rest:expr)*), ($($all:expr,)*)) => {
-        reverse_to_chained!(($($rest),*), ($first, $($all,)*))
+    ((), ($($all:expr,)+)) => { $crate::chain_components_impl!($($all),+) };
+    (($first:expr, $($rest:expr,)*), ($($all:expr,)*)) => {
+        $crate::reverse_to_chained!(($($rest,)*), ($first, $($all,)*))
     };
 }
 
 #[macro_export]
 macro_rules! chain_components {
-    ($($components:expr),*) => { reverse_to_chained!(($($components),*), ()) }
+    ($($components:expr),+) => { $crate::reverse_to_chained!(($($components,)+), ()) }
 }
 
 #[cfg(test)]
