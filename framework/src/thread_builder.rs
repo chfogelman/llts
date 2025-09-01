@@ -1,8 +1,7 @@
-
+use crate::{Context, Handler, PollEvent};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError,};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
-use crate::{Consumer, PollEvent, Dispatcher};
 
 pub struct Thread<A: Send + 'static, Others: Hub + 'static> {
     component: A,
@@ -10,19 +9,31 @@ pub struct Thread<A: Send + 'static, Others: Hub + 'static> {
     senders: <Others as Hub>::Handles<Self>,
 }
 
+pub trait Dispatcher<T>
+where
+    Self: Send + Sync,
+{
+    fn dispatch(&self, thread: &mut T);
+}
+
+impl<T: ThreadInfo, Msg: Send + Sync + 'static> Dispatcher<T> for Msg {
+    fn dispatch(&self, thread: &mut T) {
+        let (component, handles) = thread.get_handler_parts();
+        <T::Component as Handler<Msg>>::handle(component, handles, self);
+    }
+}
+
 impl<C: Send, H: Hub> Thread<C, H> {
     fn poll(&mut self) {
         PollEvent.dispatch(self);
         let next = self.receiver.try_recv();
         match next {
-            Ok(msg) => {
-                (*msg).dispatch(self)
-            },
+            Ok(msg) => (*msg).dispatch(self),
             Err(TryRecvError::Empty) => {},
             Err(TryRecvError::Disconnected) => {
                 eprintln!("Exiting due to disconnection");
                 std::process::exit(-1);
-            }
+            },
         }
     }
 }
@@ -33,14 +44,14 @@ pub trait ThreadBuilder {
 }
 
 pub trait Hub {
-    type Handles<T: ThreadInfo>: Consumer + Send + 'static;
+    type Handles<T: ThreadInfo>: Context + Send + 'static;
 }
 
 pub trait ThreadInfo {
     type Component: Send + 'static;
     type Channel;
     type Sender;
-    type Handles: Consumer + Send ;
+    type Handles: Context + Send;
     type Receiver;
     fn make_channel() -> Channel<Self>;
     fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles);
@@ -50,7 +61,8 @@ pub trait ThreadInfo {
 type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
 
 impl<A, B: Hub> ThreadInfo for Thread<A, B>
-    where A: Send,
+where
+    A: Send,
 {
     type Component = A;
     type Sender = Sender<Arc<dyn Dispatcher<Self>>>;
@@ -87,7 +99,7 @@ macro_rules! peel_impl_consumer_for_handles {
 macro_rules! impl_consumer_for_handles {
     () => {};
     ($($ts:ident,)+) => {
-        impl<$($ts: Send + ThreadInfo,)+> Consumer for ($(ThreadHandle<$ts>,)+) {
+        impl<$($ts: Send + ThreadInfo,)+> Context for ($(ThreadHandle<$ts>,)+) {
             #[allow(non_snake_case)]
             fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg) {
                 let msg = Arc::new(msg);
@@ -99,7 +111,7 @@ macro_rules! impl_consumer_for_handles {
     };
 }
 
-impl_consumer_for_handles!{A, B, C, D, E, F, G, H, I, J,}
+impl_consumer_for_handles! {A, B, C, D, E, F, G, H, I, J,}
 
 macro_rules! impl_hub_type {
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), (), ($($accum:ty,)*)) => { ($($accum,)*) };
@@ -313,4 +325,4 @@ macro_rules! impl_thread_start {
     }
 }
 
-impl_thread_start!{A, B, C, D, E, F, G, H, I, J,}
+impl_thread_start! {A, B, C, D, E, F, G, H, I, J,}
