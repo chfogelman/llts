@@ -1,62 +1,121 @@
 #![allow(unused_imports)] // FIXME
-use std::marker::PhantomData as Pd;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
+use crate::{Handler, Consumer, PollEvent};
 
-struct ThreadImpl<A, Others: Hub> {
-    a: Pd<A>,
-    b: <Others as Hub>::Handles<Self>
+pub struct Thread<A: Send + 'static, Others: Hub + 'static> {
+    component: A,
+    receiver: <Self as ThreadInfo>::Receiver,
+    handles: <Others as Hub>::Handles<Self>,
 }
 
-trait Hub {
-    type Handles<T: Thread>;
+pub trait Dispatcher<T>
+where Self: Send + Sync + 'static
+{
+    fn dispatch(&self, thread: &mut T);
 }
 
-trait Thread {
-    type Component;
-    type Channel;
-    type Sender;
-    type Receiver;
-    fn get_channel() -> Channel<Self>;
-}
-
-type Channel<T> = (<T as Thread>::Sender, <T as Thread>::Receiver);
-
-impl<A, B: Hub> Thread for ThreadImpl<A, B> {
-    type Component = A;
-
-    type Sender = Sender<Arc<dyn Dispatcher<Self>>>;
-    type Receiver = Receiver<Arc<dyn Dispatcher<Self>>>;
-
-    type Channel = Channel<Self>;
-
-    fn get_channel() -> Channel<Self> {
-        channel()
+impl<T: ThreadInfo, Msg: Send + Sync + 'static> Dispatcher<T> for Msg
+{
+    fn dispatch(&self, thread: &mut T) {
+        let (component, handles) = thread.get_handler_parts();
+        <T::Component as Handler<Msg>>::handle(component, handles, self);
     }
 }
 
+pub trait ThreadBuilder {
+    type Threads;
+    fn build_threads(self) -> Self::Threads;
+}
 
-trait Dispatcher<T> {}
+pub trait Hub {
+    type Handles<T: ThreadInfo>: Consumer + Send + 'static;
+}
+
+pub trait ThreadInfo {
+    type Component: Send + 'static;
+    type Channel;
+    type Sender;
+    type Handles: Consumer + Send + 'static;
+    type Receiver: 'static;
+    fn make_channel() -> Channel<Self>;
+    fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles);
+    fn spawn(self);
+}
+
+type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
+
+impl<A, B: Hub + 'static> ThreadInfo for Thread<A, B>
+    where A: Send + 'static,
+{
+    type Component = A;
+    type Sender = Sender<Arc<dyn Dispatcher<Self>>>;
+    type Handles = <B as Hub>::Handles<Self>;
+    type Receiver = Receiver<Arc<dyn Dispatcher<Self>>>;
+    type Channel = Channel<Self>;
+
+    fn make_channel() -> Channel<Self> {
+        channel()
+    }
+
+    fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles) {
+        (&mut self.component, &mut self.handles)
+    }
+
+    fn spawn(self) {
+        thread::spawn(move || {
+            let mut x = self;
+            loop {
+                PollEvent.dispatch(&mut x);
+            }
+        });
+    }
+}
 
 type ThreadHandle<T> = Sender<Arc<dyn Dispatcher<T>>>;
+
+macro_rules! peel_impl_consumer_for_handles {
+    ($t:ident, $($ts:ident,)*) => {
+        impl_consumer_for_handles!{$($ts,)*}
+    }
+}
+
+macro_rules! impl_consumer_for_handles {
+    () => {};
+    ($($ts:ident,)+) => {
+        impl<$($ts: Send + ThreadInfo + 'static,)+> Consumer for ($(ThreadHandle<$ts>,)+) {
+            #[allow(non_snake_case)]
+            fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg) {
+                let msg = Arc::new(msg);
+                let ($($ts,)+) = self;
+                $({$ts.send(msg.clone()).unwrap()})+
+            }
+        }
+        peel_impl_consumer_for_handles!{$($ts,)+}
+    };
+}
+
+impl_consumer_for_handles!{A, B, C, D, E, F, G, H, I, J,}
 
 macro_rules! impl_hub_type {
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), (), ($($accum:ty,)*)) => { ($($accum,)*) };
     ($slf:ident, ($($prev_xs:ident,)*), ($x:ident, $($xs:ident,)*), (), ($($ys:ident,)*), ($($accum:ty,)*)) => {
         impl_hub_type!($slf, ($($prev_xs,)* $x,), ($($xs,)*), (), ($($ys,)*),
-            ($($accum,)* ThreadHandle<ThreadImpl<$x, (($($prev_xs,)*), ($($xs,)* <$slf as Thread>::Component, $($ys,)*))>>,))
+            ($($accum,)* ThreadHandle<Thread<$x, (($($prev_xs,)*), ($($xs,)* <$slf as ThreadInfo>::Component, $($ys,)*))>>,))
     };
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), ($y:ident, $($ys:ident,)*), ($($accum:ty,)*)) => {
         impl_hub_type!($slf, ($($prev_xs,)*), (), ($($prev_ys,)* $y,), ($($ys,)*),
-            ($($accum,)* ThreadHandle<ThreadImpl<$y, (($($prev_xs,)* <$slf as Thread>::Component, $($prev_ys,)*), ($($ys,)*))>>,))
+            ($($accum,)* ThreadHandle<Thread<$y, (($($prev_xs,)* <$slf as ThreadInfo>::Component, $($prev_ys,)*), ($($ys,)*))>>,))
     };
 }
 
 macro_rules! impl_hubs {
     (($($ts:ident,)*), ()) => {};
     (($($ts:ident,)*), ($u:ident, $($us:ident,)*)) => {
-        impl<$($ts,)* $($us,)*> Hub for (($($ts,)*), ($($us,)*)) {
-            type Handles<$u: Thread> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
+        impl<$($ts: Send + 'static,)* $($us: Send + 'static,)*> Hub for (($($ts,)*), ($($us,)*)) {
+            type Handles<$u: ThreadInfo> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
         }
         impl_hubs!{($($ts,)* $u,), ($($us,)*)}
     };
@@ -70,46 +129,51 @@ macro_rules! impl_all_hubs {
     };
 }
 
-impl_all_hubs!{A, B, C, D, E, F, G, H, I, J,}
-
-trait ThreadBuilder {
-    type Threads;
-
-    fn build_threads(self) -> Self::Threads;
-}
+impl_all_hubs! {A, B, C, D, E, F, G, H, I, J,}
 
 macro_rules! thread_builder_threads_type {
     ( ($($prev:ident,)*), (), ($($accum:ty,)*) ) => {
         ($($accum,)*)
     };
     ( ($($prev:ident,)*), ($t:ident, $($ts:ident,)*), ($($accum:ty,)*) ) => {
-        thread_builder_threads_type!(($($prev,)* $t,), ($($ts,)*), ($($accum,)* ThreadImpl<$t, (($($prev,)*), ($($ts,)*))>,))
+        thread_builder_threads_type!(($($prev,)* $t,), ($($ts,)*), ($($accum,)* Thread<$t, (($($prev,)*), ($($ts,)*))>,))
     };
 }
 
 macro_rules! peel_impl_thread_builder {
-    () => {};
-    ($t:ident, $($ts:ident,)*) => {
-        impl_thread_builder!{$($ts,)*}
-    }
+    (($t:ident, $($ts:ident,)*), ($u:ident, $($us:ident,)*)) => {
+        impl_thread_builder!{ ($($ts,)*), ($($us,)*) }
+    };
 }
-
 
 macro_rules! impl_thread_builder {
-    () => {};
-    ($($ts:ident,)+) => {
-        impl<$($ts,)+> ThreadBuilder for ($($ts,)+) {
+    ((), ()) => {};
+    (($($ts:ident,)+), ($($channels:ident,)+)) => {
+        impl<$($ts: Send + 'static,)+> ThreadBuilder for ($($ts,)+) {
             type Threads = thread_builder_threads_type!((), ($($ts,)+), ());
 
+            #[allow(non_snake_case)]
             fn build_threads(self) -> Self::Threads {
                 let channels = <Self::Threads as ChannelBuilder>::get_channels();
+                let channels = channels.transpose();
+                let channels = ChannelArranger::arrange(channels);
+                let ($($ts,)+) = self;
+                let ($($channels,)+) = channels;
+                ($(Thread{
+                    component: $ts,
+                    receiver: $channels.0,
+                    handles: $channels.1,
+                },)+)
             }
         }
-        peel_impl_thread_builder!{$($ts,)+}
+        peel_impl_thread_builder!{($($ts,)+), ($($channels,)+)}
     }
 }
 
-impl_thread_builder!{A, B, C, D, E, F, G, H, I, J,}
+impl_thread_builder! {
+    (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1,),
+    (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2,)
+}
 
 trait ChannelBuilder {
     type Channels;
@@ -126,23 +190,22 @@ macro_rules! peel_channel_builder {
 macro_rules! impl_channel_builder {
     () => {};
     ($($ts:ident,)*) => {
-        impl<$($ts:Thread,)*> ChannelBuilder for ($($ts,)*) {
-            type Channels = <($(Channel<$ts>,)*) as Transpose2>::Output;
+        impl<$($ts:ThreadInfo + Send + 'static,)*> ChannelBuilder for ($($ts,)*) {
+            type Channels = ($(Channel<$ts>,)*);
             fn get_channels() -> Self::Channels {
-                ($(<$ts as Thread>::get_channel(),)*).transpose()
+                ($(<$ts as ThreadInfo>::make_channel(),)*)
             }
         }
         peel_channel_builder!{$($ts,)*}
     }
 }
 
-impl_channel_builder!{A, B, C, D, E, F, G, H, I, J,}
+impl_channel_builder! {A, B, C, D, E, F, G, H, I, J,}
 
 trait ChannelArranger {
     type ArrangedChannels;
     fn arrange(self) -> Self::ArrangedChannels;
 }
-
 
 macro_rules! channel_arranger_output_helper {
     ((), ($($prev:ident,)*), (), ($($accum:ty,)*) ) => {
@@ -170,15 +233,15 @@ macro_rules! channel_arranger_impl_helper {
 macro_rules! peel_impl_channel_arranger {
     ((), ()) => {};
     (($t:ident, $($ts:ident,)*), ($u:ident, $($us:ident,)*)) => {
-        peel_impl_channel_arranger!{ ($($ts,)*), ($($us,)*) }
+        impl_channel_arranger!{ ($($ts,)*), ($($us,)*) }
     };
 }
 macro_rules! impl_channel_arranger {
-    ((), ()) => {};
     (($($senders:ident,)*), ($($receivers:ident,)*)) => {
         impl<$($senders:Clone,)* $($receivers,)*> ChannelArranger for (($($senders,)*), ($($receivers,)*)) {
             type ArrangedChannels = channel_arranger_output_helper!(($($receivers,)*), (), ($($senders,)*), ());
             #[allow(non_snake_case)]
+            #[allow(unused_variables)]
             fn arrange(self) -> Self::ArrangedChannels {
                 let (($($senders,)*), ($($receivers,)*)) = self;
                 channel_arranger_impl_helper!(($($receivers,)*), (), ($($senders,)*), ())
@@ -192,13 +255,6 @@ impl_channel_arranger! {
     (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1,),
     (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2,)
 }
-
-
-
-
-
-
-
 
 trait Transpose2 {
     type Output;
