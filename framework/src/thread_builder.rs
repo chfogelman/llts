@@ -18,8 +18,7 @@ where
 
 impl<T: ThreadInfo, Msg: Send + Sync + 'static> Dispatcher<T> for Msg {
     fn dispatch(&self, thread: &mut T) {
-        let (component, handles) = thread.get_handler_parts();
-        <T::Component as Handler<Msg>>::handle(component, handles, self);
+        thread.dispatch_msg(self);
     }
 }
 
@@ -51,10 +50,9 @@ pub trait ThreadInfo {
     type Component: Send + 'static;
     type Channel;
     type Sender;
-    type Handles: Context + Send;
     type Receiver;
     fn make_channel() -> Channel<Self>;
-    fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles);
+    fn dispatch_msg<Msg>(&mut self, msg: &Msg);
     fn spawn(self) -> thread::JoinHandle<()>;
 }
 
@@ -66,7 +64,6 @@ where
 {
     type Component = A;
     type Sender = Sender<Arc<dyn Dispatcher<Self>>>;
-    type Handles = <B as Hub>::Handles<Self>;
     type Receiver = Receiver<Arc<dyn Dispatcher<Self>>>;
     type Channel = Channel<Self>;
 
@@ -74,8 +71,8 @@ where
         channel()
     }
 
-    fn get_handler_parts(&mut self) -> (&mut Self::Component, &mut Self::Handles) {
-        (&mut self.component, &mut self.senders)
+    fn dispatch_msg<Msg>(&mut self, msg: &Msg) {
+        <A as Handler<Msg>>::handle(&mut self.component, &mut self.senders, msg);
     }
 
     fn spawn(self) -> thread::JoinHandle<()> {

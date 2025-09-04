@@ -1,11 +1,11 @@
 #![feature(min_specialization)]
 
-mod thread_builder;
 pub mod messages;
+mod thread_builder;
 
+pub use messages::*;
 pub use thread_builder::ThreadBuilder;
 pub use thread_builder::ThreadStart;
-pub use messages::*;
 
 pub trait Context {
     fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg);
@@ -23,12 +23,12 @@ impl<Msg, T> Handler<Msg> for T {
 
 impl<Msg, T> Handler<Msg> for &mut T {
     #[inline]
-    fn handle(&mut self, ctx: &mut impl Context, msg: &Msg) {
+    default fn handle(&mut self, ctx: &mut impl Context, msg: &Msg) {
         (**self).handle(ctx, msg);
     }
 }
 
-/// No-op Consumer implementation for `()`
+/// No-op [`Context`] implementation for `()`
 impl Context for () {
     fn publish<Msg>(&mut self, _msg: Msg) {}
 }
@@ -55,12 +55,14 @@ where
     }
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! chain_components_impl {
     ($first:expr) => { $first };
     ($last:expr, $($rest:expr),+) => { $crate::ChainedComponent($crate::chain_components_impl!($($rest),+), $last) };
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! reverse_to_chained {
     ((), ($($all:expr,)+)) => { $crate::chain_components_impl!($($all),+) };

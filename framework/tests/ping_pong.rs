@@ -43,6 +43,7 @@ impl Handler<Ping> for Ponger {
 
 #[test]
 fn ping_pong() {
+    let duration = std::time::Duration::from_millis(1);
     let pair = Arc::new(AtomicBool::new(false));
     let threads = ThreadBuilder::build_threads((
         Pinger {
@@ -52,8 +53,8 @@ fn ping_pong() {
         Ponger,
     ));
     let _handles = ThreadStart::start(threads);
-    std::thread::sleep(std::time::Duration::from_millis(1));
+    std::thread::sleep(duration);
     if !pair.load(Ordering::Acquire) {
-        panic!("Failed to finish ");
+        panic!("Failed to finish within {:?}", duration);
     }
 }
