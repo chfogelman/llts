@@ -1,5 +1,6 @@
 #![feature(min_specialization)]
 
+pub mod envelope;
 pub mod messages;
 mod thread_builder;
 
@@ -7,8 +8,22 @@ pub use messages::*;
 pub use thread_builder::ThreadBuilder;
 pub use thread_builder::ThreadStart;
 
+use envelope::ThreadLocalEnvelope;
+
 pub trait Context {
-    fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg);
+    #[doc(hidden)]
+    fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
+}
+
+#[macro_export]
+macro_rules! publish {
+    ($ctx:expr, $e:expr) => {{
+        #[allow(unused_imports)]
+        use $crate::envelope::{__forward_as_envelope_arc, __forward_as_envelope_copy, __forward_as_envelope_sync};
+        let val = $e;
+        let disp = $crate::envelope::__spec_envelope_maker::from_ref(&val);
+        (&&disp).forward_as_envelope(&mut *$ctx, val)
+    }};
 }
 
 pub trait Handler<Msg> {
@@ -24,13 +39,13 @@ impl<Msg, T> Handler<Msg> for T {
 impl<Msg, T> Handler<Msg> for &mut T {
     #[inline]
     default fn handle(&mut self, ctx: &mut impl Context, msg: &Msg) {
-        (**self).handle(ctx, msg);
+        <T as Handler<Msg>>::handle(*self, ctx, msg);
     }
 }
 
 /// No-op [`Context`] implementation for `()`
 impl Context for () {
-    fn publish<Msg>(&mut self, _msg: Msg) {}
+    fn publish<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
 }
 
 pub struct ChainedComponent<T, U>(pub T, pub U);
@@ -49,8 +64,8 @@ impl<'a, T, U> Context for DownstreamComponents<'a, T, U>
 where
     U: Context,
 {
-    fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg) {
-        <T as Handler<Msg>>::handle(self.0, self.1, &msg);
+    fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+        <T as Handler<Msg>>::handle(self.0, self.1, msg.get());
         self.1.publish(msg);
     }
 }
@@ -89,21 +104,21 @@ mod test {
     impl Handler<Message0> for Ex1 {
         fn handle(&mut self, ctx: &mut impl Context, msg: &Message0) {
             println!("{:width$}Ex1({}) received Message0({}, {})", "", self.0, msg.0, msg.1, width = msg.2);
-            ctx.publish(Message1("Ex1", self.0, msg.2 + 4));
+            publish!(ctx, Message1("Ex1", self.0, msg.2 + 4));
         }
     }
 
     impl Handler<Message1> for Ex1 {
         fn handle(&mut self, ctx: &mut impl Context, msg: &Message1) {
             println!("{:width$}Ex1({}) received Message1({}, {})", "", self.0, msg.0, msg.1, width = msg.2);
-            ctx.publish(Message0("Ex1", self.0, msg.2 + 4));
+            publish!(ctx, Message0("Ex1", self.0, msg.2 + 4));
         }
     }
 
     impl Handler<Message0> for Ex2 {
         fn handle(&mut self, ctx: &mut impl Context, msg: &Message0) {
             println!("{:width$}Ex2({}) received Message0({}, {})", "", self.0, msg.0, msg.1, width = msg.2);
-            ctx.publish(Message0("Ex2", self.0, msg.2 + 4));
+            publish!(ctx, Message0("Ex2", self.0, msg.2 + 4));
         }
     }
 
@@ -117,8 +132,8 @@ mod test {
             }
         }
         impl Context for Tester {
-            fn publish<Msg>(&mut self, msg: Msg) {
-                <Self as Handler<Msg>>::handle(self, &mut (), &msg);
+            fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+                <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
             }
         }
 
@@ -146,8 +161,8 @@ mod test {
         }
 
         impl Context for Tester {
-            fn publish<Msg>(&mut self, msg: Msg) {
-                <Self as Handler<Msg>>::handle(self, &mut (), &msg);
+            fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+                <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
             }
         }
 

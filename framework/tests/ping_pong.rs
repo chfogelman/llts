@@ -1,12 +1,14 @@
 #![feature(min_specialization)]
 
-use framework::{Handler, PollEvent, ThreadBuilder, ThreadStart};
+use framework::{Handler, PollEvent, ThreadBuilder, ThreadStart, publish};
 use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 
+#[derive(Clone, Copy)]
 struct Ping {
     count: i32,
 }
 
+#[derive(Clone, Copy)]
 struct Pong {
     count: i32,
 }
@@ -27,7 +29,7 @@ impl Handler<Pong> for Pinger {
 
 impl Handler<PollEvent> for Pinger {
     fn handle(&mut self, ctx: &mut impl framework::Context, _: &PollEvent) {
-        ctx.publish(Ping { count: self.count });
+        publish!(ctx, Ping { count: self.count });
         self.count += 1;
     }
 }
@@ -37,7 +39,7 @@ struct Ponger;
 impl Handler<Ping> for Ponger {
     fn handle(&mut self, ctx: &mut impl framework::Context, msg: &Ping) {
         println!("Received Ping with count {} on {:?}", msg.count, std::thread::current().id());
-        ctx.publish(Pong { count: msg.count });
+        publish!(ctx, Pong { count: msg.count });
     }
 }
 

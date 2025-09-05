@@ -1,33 +1,20 @@
-use crate::{Context, Handler, PollEvent};
-use std::sync::Arc;
+use crate::envelope::{Envelope, EnvelopeBuilder};
+use crate::{Context, Handler, PollEvent, ThreadLocalEnvelope};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
 pub struct Thread<A: Send + 'static, Others: Hub + 'static> {
     component: A,
-    receiver: Receiver<Arc<dyn Dispatcher<Self>>>,
+    receiver: Receiver<Envelope<Self>>,
     senders: <Others as Hub>::Handles<Self>,
-}
-
-pub trait Dispatcher<T>
-where
-    Self: Send + Sync,
-{
-    fn dispatch(&self, thread: &mut T);
-}
-
-impl<T: ThreadInfo, Msg: Send + Sync + 'static> Dispatcher<T> for Msg {
-    fn dispatch(&self, thread: &mut T) {
-        thread.dispatch_msg(self);
-    }
 }
 
 impl<C: Send, H: Hub> Thread<C, H> {
     fn poll(&mut self) {
-        PollEvent.dispatch(self);
+        self.dispatch_msg(&PollEvent);
         let next = self.receiver.try_recv();
         match next {
-            Ok(msg) => (*msg).dispatch(self),
+            Ok(msg) => msg.dispatch_onto(self),
             Err(TryRecvError::Empty) => {},
             Err(TryRecvError::Disconnected) => {
                 eprintln!("Exiting due to disconnection");
@@ -63,8 +50,8 @@ where
     A: Send,
 {
     type Component = A;
-    type Sender = Sender<Arc<dyn Dispatcher<Self>>>;
-    type Receiver = Receiver<Arc<dyn Dispatcher<Self>>>;
+    type Sender = Sender<Envelope<Self>>;
+    type Receiver = Receiver<Envelope<Self>>;
     type Channel = Channel<Self>;
 
     fn make_channel() -> Channel<Self> {
@@ -85,7 +72,7 @@ where
     }
 }
 
-type ThreadHandle<T> = Sender<Arc<dyn Dispatcher<T>>>;
+type ThreadHandle<T> = Sender<Envelope<T>>;
 
 macro_rules! peel_impl_consumer_for_handles {
     ($t:ident, $($ts:ident,)*) => {
@@ -98,10 +85,10 @@ macro_rules! impl_consumer_for_handles {
     ($($ts:ident,)+) => {
         impl<$($ts: Send + ThreadInfo,)+> Context for ($(ThreadHandle<$ts>,)+) {
             #[allow(non_snake_case)]
-            fn publish<Msg: Send + Sync + 'static>(&mut self, msg: Msg) {
-                let msg = Arc::new(msg);
+            fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+                let msg = msg.alloc_envelope();
                 let ($($ts,)+) = self;
-                $({$ts.send(msg.clone()).unwrap()})+
+                $({$ts.send(msg.build_envelope()).unwrap()})+
             }
         }
         peel_impl_consumer_for_handles!{$($ts,)+}
