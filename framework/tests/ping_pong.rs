@@ -15,14 +15,14 @@ struct Pong {
 
 struct Pinger {
     count: i32,
-    pair: Arc<AtomicBool>,
+    flag: Arc<AtomicBool>,
 }
 
 impl Handler<Pong> for Pinger {
     fn handle(&mut self, _ctx: &mut impl framework::Context, msg: &Pong) {
         println!("Received Pong with count {} on {:?}", msg.count, std::thread::current().id());
         if msg.count > 10 {
-            self.pair.store(true, Ordering::Release);
+            self.flag.store(true, Ordering::Release);
         }
     }
 }
@@ -45,18 +45,18 @@ impl Handler<Ping> for Ponger {
 
 #[test]
 fn ping_pong() {
-    let duration = std::time::Duration::from_millis(1);
-    let pair = Arc::new(AtomicBool::new(false));
+    let duration = std::time::Duration::from_micros(250);
+    let flag = Arc::new(AtomicBool::new(false));
     let threads = ThreadBuilder::build_threads((
         Pinger {
             count: 0,
-            pair: pair.clone(),
+            flag: flag.clone(),
         },
         Ponger,
     ));
     let _handles = ThreadStart::start(threads);
     std::thread::sleep(duration);
-    if !pair.load(Ordering::Acquire) {
+    if !flag.load(Ordering::Acquire) {
         panic!("Failed to finish within {:?}", duration);
     }
 }

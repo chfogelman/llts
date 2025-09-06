@@ -45,21 +45,25 @@ struct ArcEnvelope<Msg: Send + Sync + 'static>(Arc<Msg>);
 struct CopyEnvelopeBuilder<Msg>(Msg);
 
 #[repr(transparent)]
+struct SyncEnvelopeBuilder<Msg>(Arc<Msg>);
+
+#[repr(transparent)]
 struct ArcEnvelopeBuilder<Msg>(Arc<Msg>);
 
 pub(crate) trait EnvelopeBuilder<Msg> {
     fn build_envelope<Dst: ThreadInfo>(&self) -> Envelope<Dst>;
 }
 
-unsafe fn copy_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
-    unsafe {
-        let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
-        thread.dispatch_msg(&msg);
-    }
-}
-
 impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
     fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
+
+        unsafe fn copy_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+            unsafe {
+                let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
+                thread.dispatch_msg(&msg);
+            }
+        }
+
         let buf = unsafe {
             let mut buf = [mem::MaybeUninit::uninit(); _];
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Msg, self.0);
@@ -72,15 +76,42 @@ impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Ms
     }
 }
 
-unsafe fn arc_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
-    unsafe {
-        let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
-        thread.dispatch_msg(&*msg);
+impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Msg> {
+    fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
+
+        unsafe fn sync_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+            unsafe {
+                let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
+
+                // Ensure dispatch as &Msg
+                thread.dispatch_msg(&*msg as &Msg);
+            }
+        }
+
+        let buf = unsafe {
+            let mut buf = [mem::MaybeUninit::uninit(); _];
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Arc<Msg>, Arc::clone(&self.0));
+            buf
+        };
+        Envelope {
+            dispatcher: sync_dispatcher::<Thread, Msg>,
+            buf,
+        }
     }
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg> {
     fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
+
+        unsafe fn arc_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+            unsafe {
+                let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
+
+                // Ensure dispatch as Arc
+                thread.dispatch_msg(&msg as &Arc<_>);
+            }
+        }
+
         let buf = unsafe {
             let mut buf = [mem::MaybeUninit::uninit(); _];
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Arc<Msg>, Arc::clone(&self.0));
@@ -118,7 +149,7 @@ impl<T: Copy + Send + 'static> ThreadLocalEnvelope<T> for CopyEnvelope<T> {
 
 impl<T: Send + Sync + 'static> ThreadLocalEnvelope<T> for SyncEnvelope<T> {
     fn alloc_envelope(self) -> impl EnvelopeBuilder<T> {
-        ArcEnvelopeBuilder(Arc::new(self.0))
+        SyncEnvelopeBuilder(Arc::new(self.0))
     }
 
     fn get(&self) -> &T {
@@ -164,6 +195,7 @@ pub trait __forward_as_envelope_arc<T> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: T);
 }
 
+// Copy implementation is most specialized, so try that first
 impl<T: Copy + Send + Sync + 'static> __forward_as_envelope_copy<T> for &'_ &'_ __spec_envelope_maker<T> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: T) {
         if const { mem::size_of::<T>() <= mem::size_of::<EnvelopeBuf>() } {
@@ -174,14 +206,16 @@ impl<T: Copy + Send + Sync + 'static> __forward_as_envelope_copy<T> for &'_ &'_ 
     }
 }
 
+// Then try Arc
 impl<T: Send + Sync + 'static> __forward_as_envelope_arc<Arc<T>> for &'_ __spec_envelope_maker<Arc<T>> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: Arc<T>) {
         ctx.publish(ArcEnvelope(val));
     }
 }
 
+// Then fall back to allocating at publish
 impl<T: Send + Sync + 'static> __forward_as_envelope_sync<T> for __spec_envelope_maker<T> {
-    default fn forward_as_envelope(&self, ctx: &mut impl Context, val: T) {
+    fn forward_as_envelope(&self, ctx: &mut impl Context, val: T) {
         ctx.publish(SyncEnvelope(val));
     }
 }
