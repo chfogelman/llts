@@ -16,7 +16,7 @@ impl Handler<PollEvent> for ThreadTheFirst {
     }
 }
 
-struct ThreadTheSecond{
+struct ThreadTheSecond {
     received_i32: bool,
     finished: Arc<AtomicBool>,
 }
@@ -40,13 +40,11 @@ fn test() {
     let duration = std::time::Duration::from_micros(250);
     let flag = Arc::new(AtomicBool::new(false));
     let threads = ThreadBuilder::build_threads((
-            ThreadTheFirst {
-                sent: false,
-            },
-            ThreadTheSecond {
-                received_i32: false,
-                finished: flag.clone(),
-            },
+        ThreadTheFirst { sent: false },
+        ThreadTheSecond {
+            received_i32: false,
+            finished: flag.clone(),
+        },
     ));
     let _handles = ThreadStart::start(threads);
     std::thread::sleep(duration);

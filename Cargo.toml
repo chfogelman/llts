@@ -6,8 +6,9 @@ codegen-units = 1
 lto = true
 
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "framework",
-    "utils",
+    "md",
+    "util",
 ]

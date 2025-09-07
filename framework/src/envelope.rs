@@ -56,7 +56,6 @@ pub(crate) trait EnvelopeBuilder<Msg> {
 
 impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
     fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-
         unsafe fn copy_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
             unsafe {
                 let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
@@ -78,7 +77,6 @@ impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Ms
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Msg> {
     fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-
         unsafe fn sync_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
@@ -102,7 +100,6 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Ms
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg> {
     fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-
         unsafe fn arc_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);

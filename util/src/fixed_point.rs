@@ -136,10 +136,7 @@ mod test {
     #[test]
     fn test_fmt() {
         assert_eq!(format!("{}", Fp64::<9>::from(-1.00049004)), "-1.000490040");
-        assert_eq!(
-            format!("{:?}", Fp64::<9>::from(-1.00049004)),
-            "-1.000490040:fp9"
-        );
+        assert_eq!(format!("{:?}", Fp64::<9>::from(-1.00049004)), "-1.000490040:fp9");
     }
 
     #[test]

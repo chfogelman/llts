@@ -2,11 +2,11 @@ use zerocopy::*;
 
 #[repr(transparent)]
 #[derive(IntoBytes, FromZeros, KnownLayout, Immutable, Unaligned, Clone, Copy, Eq)]
-pub struct FixedString<const N: usize>([u8; N]);
+pub struct FixedString<const N: usize, const E: u8 = 0>([u8; N]);
 
-impl<const N: usize> FixedString<N> {
+impl<const N: usize, const E: u8> FixedString<N, E> {
     pub const fn new() -> Self {
-        Self([0; N])
+        Self([E; N])
     }
 
     pub fn from_truncated(mut s: &str) -> Self {
@@ -18,7 +18,7 @@ impl<const N: usize> FixedString<N> {
 
     /// This function is O(N).
     fn to_slice(&self) -> &[u8] {
-        let end = self.0.iter().position(|&b| b == 0).unwrap_or(N);
+        let end = self.0.iter().position(|&b| b == E).unwrap_or(N);
         &self.0[..end]
     }
 
@@ -36,25 +36,29 @@ impl<const N: usize> Default for FixedString<N> {
 #[derive(Clone, Copy, Debug)]
 pub struct LengthError;
 
-impl<const N: usize> std::convert::TryFrom<&str> for FixedString<N> {
+impl<const N: usize, const E: u8> std::convert::TryFrom<&str> for FixedString<N, E> {
     type Error = LengthError;
 
     fn try_from(inp: &str) -> Result<Self, Self::Error> {
-        let mut outp = Self::new();
-        for (i, c) in inp.bytes().enumerate() {
-            outp.0[i] = c;
+        let mut out = Self::new();
+        for (i, c) in inp.bytes().take_while(|&b| b != E).enumerate() {
+            if i < N {
+                out.0[i] = c;
+            } else {
+                return Err(LengthError);
+            }
         }
-        Ok(outp)
+        Ok(out)
     }
 }
 
-impl<const N: usize> std::hash::Hash for FixedString<N> {
+impl<const N: usize, const E: u8> std::hash::Hash for FixedString<N, E> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         state.write(self.to_slice())
     }
 }
 
-impl<const N: usize> std::fmt::Display for FixedString<N> {
+impl<const N: usize, const E: u8> std::fmt::Display for FixedString<N, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for b in self.bytes() {
             write!(f, "{}", b as char)?;
@@ -63,7 +67,7 @@ impl<const N: usize> std::fmt::Display for FixedString<N> {
     }
 }
 
-impl<const N: usize> std::fmt::Debug for FixedString<N> {
+impl<const N: usize, const E: u8> std::fmt::Debug for FixedString<N, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"")?;
         for b in self.0 {
@@ -74,29 +78,28 @@ impl<const N: usize> std::fmt::Debug for FixedString<N> {
     }
 }
 
-impl<T, const N: usize> core::cmp::PartialEq<T> for FixedString<N>
+impl<T, const N: usize, const E: u8> core::cmp::PartialEq<T> for FixedString<N, E>
 where
     T: AsRef<[u8]> + ?Sized,
 {
     fn eq(&self, other: &T) -> bool {
-        self.bytes()
-            .eq(other.as_ref().iter().copied().take_while(|&b| b != 0))
+        self.bytes().eq(other.as_ref().iter().copied().take_while(|&b| b != 0))
     }
 }
 
-impl<const N: usize, const M: usize> core::cmp::PartialEq<FixedString<N>> for FixedString<M> {
-    fn eq(&self, other: &FixedString<N>) -> bool {
+impl<const N: usize, const M: usize, const E: u8> core::cmp::PartialEq<FixedString<N, E>> for FixedString<M, E> {
+    fn eq(&self, other: &FixedString<N, E>) -> bool {
         self.bytes().eq(other.bytes())
     }
 }
 
-impl<const N: usize, const M: usize> core::cmp::PartialOrd<FixedString<N>> for FixedString<M> {
-    fn partial_cmp(&self, other: &FixedString<N>) -> Option<std::cmp::Ordering> {
+impl<const N: usize, const M: usize, const E: u8> core::cmp::PartialOrd<FixedString<N, E>> for FixedString<M, E> {
+    fn partial_cmp(&self, other: &FixedString<N, E>) -> Option<std::cmp::Ordering> {
         self.bytes().partial_cmp(other.bytes())
     }
 }
 
-impl<T, const N: usize> core::cmp::PartialOrd<T> for FixedString<N>
+impl<T, const N: usize, const E: u8> core::cmp::PartialOrd<T> for FixedString<N, E>
 where
     T: AsRef<[u8]> + ?Sized,
 {
@@ -106,8 +109,8 @@ where
     }
 }
 
-impl<const N: usize> core::cmp::Ord for FixedString<N> {
-    fn cmp(&self, other: &FixedString<N>) -> std::cmp::Ordering {
+impl<const N: usize, const E: u8> core::cmp::Ord for FixedString<N, E> {
+    fn cmp(&self, other: &FixedString<N, E>) -> std::cmp::Ordering {
         self.bytes().cmp(other.bytes())
     }
 }
@@ -122,7 +125,7 @@ mod test {
     fn test() {
         let hello = FixedString::<40>::try_from("Hello world").unwrap();
         assert_eq!(hello, "Hello world");
-        assert_eq!(FixedString(*b"Hello\0world"), FixedString(*b"Hello"));
+        assert_eq!(FixedString::<11, 0>(*b"Hello\0world"), FixedString(*b"Hello"));
     }
 
     #[test]
@@ -135,23 +138,14 @@ mod test {
 
     #[test]
     fn test_fmt() {
-        assert_eq!(
-            format!("{}", FS::try_from("Hello world").unwrap()),
-            "Hello world"
-        );
+        assert_eq!(format!("{}", FS::try_from("Hello world").unwrap()), "Hello world");
     }
 
     #[test]
     fn test_cmp() {
-        assert_eq!(
-            FS::from_truncated("Hello world"),
-            FS::from_truncated("Hello world\0xyz")
-        );
+        assert_eq!(FS::from_truncated("Hello world"), FS::from_truncated("Hello world\0xyz"));
         assert_eq!(FS::try_from("Hello world").unwrap(), "Hello world\0xyz");
-        assert_ne!(
-            FS::try_from("Hello world").unwrap(),
-            FS::from_truncated("Hello world!")
-        );
+        assert_ne!(FS::try_from("Hello world").unwrap(), FS::from_truncated("Hello world!"));
         assert_ne!(FS::try_from("Hello world").unwrap(), "Hello world!");
         assert!(FS::try_from("Hello worlc").unwrap() < "Hello world\0xyz");
         assert!(FS::try_from("Hello worl\0z").unwrap() < "Hello world\0xyz");
