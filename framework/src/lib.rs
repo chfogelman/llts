@@ -52,21 +52,27 @@ pub struct ChainedComponent<T, U>(pub T, pub U);
 
 impl<Msg, T, U> Handler<Msg> for ChainedComponent<T, U> {
     fn handle(&mut self, ctx: &mut impl Context, msg: &Msg) {
-        let mut downstream = DownstreamComponents(&mut self.1, &mut *ctx);
+        let mut downstream = DownstreamComponents {
+            handler_ref: &mut self.1,
+            ctx_ref: &mut *ctx,
+        };
         <T as Handler<Msg>>::handle(&mut self.0, &mut downstream, msg);
         <U as Handler<Msg>>::handle(&mut self.1, ctx, msg);
     }
 }
 
-struct DownstreamComponents<'a, T, U>(&'a mut T, &'a mut U);
+struct DownstreamComponents<'a, H, Ctx> {
+    handler_ref: &'a mut H,
+    ctx_ref: &'a mut Ctx,
+}
 
-impl<'a, T, U> Context for DownstreamComponents<'a, T, U>
+impl<'a, H, Ctx> Context for DownstreamComponents<'a, H, Ctx>
 where
-    U: Context,
+    Ctx: Context,
 {
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-        <T as Handler<Msg>>::handle(self.0, self.1, msg.get());
-        self.1.publish(msg);
+        <H as Handler<Msg>>::handle(self.handler_ref, self.ctx_ref, msg.get());
+        self.ctx_ref.publish(msg);
     }
 }
 

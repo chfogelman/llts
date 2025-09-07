@@ -3,20 +3,21 @@ use crate::thread_builder::ThreadInfo;
 use std::sync::Arc;
 use std::{marker::PhantomData, mem};
 
-// Type-erased function for dispatching the contents of an envelope onto a thread
-// managing a component chain
+/// Type-erased function for dispatching the contents of an envelope onto a thread
+/// managing a handler chain.
 type DispatchFn<T> = unsafe fn(&mut T, *const ());
 
-// Byte buffer for storing a type-erased object inside an envelope
-type EnvelopeBuf = [mem::MaybeUninit<u8>; 24];
+const BUF_SIZE: usize = 24;
+
+/// Byte buffer for storing a type-erased object inside an envelope
+type EnvelopeBuf = [mem::MaybeUninit<u8>; BUF_SIZE];
 
 /// Type-erased envelope for sending messages between threads.
 ///
-/// It provides optimizations for
-/// small [`Copy`] types as well as [`Arc`]. You should not need to use this type
-/// directly. Instead, use [`crate::publish`]. Because it may contain a type-erased [`Arc`], it
-/// must _not_ implement [`Copy`] itself. The derived Clone implementation would also be incorrect for
-/// this type.
+/// It provides optimizations for small [`Copy`] types as well as [`Arc`]. You should not need to
+/// use this type directly. Instead, use [`crate::publish`]. Because it may contain a type-erased
+/// [`Arc`], it must _not_ implement [`Copy`] itself. The derived Clone implementation would also
+/// be incorrect for this type.
 pub struct Envelope<Dst> {
     dispatcher: DispatchFn<Dst>,
     buf: EnvelopeBuf,
@@ -25,6 +26,12 @@ pub struct Envelope<Dst> {
 impl<Dst: ThreadInfo> Envelope<Dst> {
     pub(crate) fn dispatch_onto(self, thread: &mut Dst) {
         let Envelope { dispatcher, ref buf } = self;
+
+        // SAFETY: We make sure to use the dispatcher on this message with the message itself. It
+        // would only be UB to use the dispatcher of one message with the buffer of another.
+        // NOTE: You may feel compelled to change `self` to `&self`. DON'T. The `dispatcher`
+        // function is also responsible for dropping the type-erased message. This function must be
+        // called only once for an envelope.
         unsafe { dispatcher(thread, buf.as_ptr() as *const ()) }
     }
 }
@@ -32,21 +39,23 @@ impl<Dst: ThreadInfo> Envelope<Dst> {
 // Assert the size stays at 32 bytes
 const _: () = const { assert!(mem::size_of::<Envelope<[u8; 1024]>>() == 32) };
 
+// These are the [`ThreadLocalEnvelope`] types that are used to publish to handlers on the same
+// thread. They are not converted to [`EnvelopeBuilder`]s until it is time to publish to other
+// threads.
 #[repr(transparent)]
 struct CopyEnvelope<Msg: Copy + Send + 'static>(Msg);
-
 #[repr(transparent)]
 struct SyncEnvelope<Msg: Send + Sync + 'static>(Msg);
-
 #[repr(transparent)]
 struct ArcEnvelope<Msg: Send + Sync + 'static>(Arc<Msg>);
 
+// These are the [`EnvelopeBuilder`] types that may contain an allocated [`Arc`] that will be
+// cloned when publishing to each other thread. These are only created after the contained message
+// has been published to each thread-local [`Handler`].
 #[repr(transparent)]
 struct CopyEnvelopeBuilder<Msg>(Msg);
-
 #[repr(transparent)]
 struct SyncEnvelopeBuilder<Msg>(Arc<Msg>);
-
 #[repr(transparent)]
 struct ArcEnvelopeBuilder<Msg>(Arc<Msg>);
 
@@ -81,7 +90,7 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Ms
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
 
-                // Ensure dispatch as &Msg
+                // Ensure dispatch as &Msg. No failure to coerce
                 thread.dispatch_msg(&*msg as &Msg);
             }
         }
@@ -104,7 +113,7 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
 
-                // Ensure dispatch as Arc
+                // Ensure dispatch as Arc. No deref coercion
                 thread.dispatch_msg(&msg as &Arc<_>);
             }
         }
@@ -129,37 +138,37 @@ impl<Msg: Copy + Send + 'static> private::Sealed for CopyEnvelope<Msg> {}
 impl<Msg: Send + Sync + 'static> private::Sealed for SyncEnvelope<Msg> {}
 impl<Msg: Send + Sync + 'static> private::Sealed for ArcEnvelope<Msg> {}
 
-pub trait ThreadLocalEnvelope<T>: private::Sealed {
-    fn alloc_envelope(self) -> impl EnvelopeBuilder<T>;
-    fn get(&self) -> &T;
+pub trait ThreadLocalEnvelope<Msg>: private::Sealed {
+    fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg>;
+    fn get(&self) -> &Msg;
 }
 
-impl<T: Copy + Send + 'static> ThreadLocalEnvelope<T> for CopyEnvelope<T> {
-    fn alloc_envelope(self) -> impl EnvelopeBuilder<T> {
+impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<Msg> {
+    fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg> {
         CopyEnvelopeBuilder(self.0)
     }
 
-    fn get(&self) -> &T {
+    fn get(&self) -> &Msg {
         &self.0
     }
 }
 
-impl<T: Send + Sync + 'static> ThreadLocalEnvelope<T> for SyncEnvelope<T> {
-    fn alloc_envelope(self) -> impl EnvelopeBuilder<T> {
+impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<Msg> {
+    fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg> {
         SyncEnvelopeBuilder(Arc::new(self.0))
     }
 
-    fn get(&self) -> &T {
+    fn get(&self) -> &Msg {
         &self.0
     }
 }
 
-impl<T: Send + Sync + 'static> ThreadLocalEnvelope<T> for ArcEnvelope<T> {
-    fn alloc_envelope(self) -> impl EnvelopeBuilder<T> {
+impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for ArcEnvelope<Msg> {
+    fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg> {
         ArcEnvelopeBuilder(self.0)
     }
 
-    fn get(&self) -> &T {
+    fn get(&self) -> &Msg {
         &self.0
     }
 }
@@ -195,7 +204,7 @@ pub trait __forward_as_envelope_arc<T> {
 // Copy implementation is most specialized, so try that first
 impl<T: Copy + Send + Sync + 'static> __forward_as_envelope_copy<T> for &'_ &'_ __spec_envelope_maker<T> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: T) {
-        if const { mem::size_of::<T>() <= mem::size_of::<EnvelopeBuf>() } {
+        if const { mem::size_of::<T>() <= BUF_SIZE } {
             ctx.publish(CopyEnvelope(val));
         } else {
             ctx.publish(SyncEnvelope(val));

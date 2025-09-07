@@ -3,13 +3,13 @@ use crate::{Context, Handler, PollEvent, ThreadLocalEnvelope};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
-pub struct Thread<A: Send + 'static, Others: Hub + 'static> {
-    component: A,
+pub struct Thread<Hlr: Send + 'static, Others: Hub + 'static> {
+    component: Hlr,
     receiver: Receiver<Envelope<Self>>,
-    senders: <Others as Hub>::Handles<Self>,
+    senders: <Others as Hub>::Handles<Hlr>,
 }
 
-impl<C: Send, H: Hub> Thread<C, H> {
+impl<Hlr: Send, H: Hub> Thread<Hlr, H> {
     fn poll(&mut self) {
         self.dispatch_msg(&PollEvent);
         let next = self.receiver.try_recv();
@@ -30,11 +30,12 @@ pub trait ThreadBuilder {
 }
 
 pub trait Hub {
-    type Handles<T: ThreadInfo>: Context + Send + 'static;
+    type Handles<T: Send + 'static>: Context + Send + 'static;
 }
 
+type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
+
 pub trait ThreadInfo {
-    type Component: Send + 'static;
     type Channel;
     type Sender;
     type Receiver;
@@ -43,13 +44,10 @@ pub trait ThreadInfo {
     fn spawn(self) -> thread::JoinHandle<()>;
 }
 
-type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
-
-impl<A, B: Hub> ThreadInfo for Thread<A, B>
+impl<Hlr, B: Hub> ThreadInfo for Thread<Hlr, B>
 where
-    A: Send,
+    Hlr: Send,
 {
-    type Component = A;
     type Sender = Sender<Envelope<Self>>;
     type Receiver = Receiver<Envelope<Self>>;
     type Channel = Channel<Self>;
@@ -59,14 +57,14 @@ where
     }
 
     fn dispatch_msg<Msg>(&mut self, msg: &Msg) {
-        <A as Handler<Msg>>::handle(&mut self.component, &mut self.senders, msg);
+        <Hlr as Handler<Msg>>::handle(&mut self.component, &mut self.senders, msg);
     }
 
     fn spawn(self) -> thread::JoinHandle<()> {
+        let mut thread_impl = self;
         thread::spawn(move || {
-            let mut x = self;
             loop {
-                x.poll();
+                thread_impl.poll();
             }
         })
     }
@@ -74,16 +72,16 @@ where
 
 type ThreadHandle<T> = Sender<Envelope<T>>;
 
-macro_rules! peel_impl_consumer_for_handles {
+macro_rules! peel_impl_context_for_handles {
     ($t:ident, $($ts:ident,)*) => {
-        impl_consumer_for_handles!{$($ts,)*}
+        impl_context_for_handles!{$($ts,)*}
     }
 }
 
-macro_rules! impl_consumer_for_handles {
+macro_rules! impl_context_for_handles {
     () => {};
     ($($ts:ident,)+) => {
-        impl<$($ts: Send + ThreadInfo,)+> Context for ($(ThreadHandle<$ts>,)+) {
+        impl<$($ts: ThreadInfo,)+> Context for ($(ThreadHandle<$ts>,)+) {
             #[allow(non_snake_case)]
             fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                 let msg = msg.alloc_envelope();
@@ -91,21 +89,21 @@ macro_rules! impl_consumer_for_handles {
                 $({$ts.send(msg.build_envelope()).unwrap()})+
             }
         }
-        peel_impl_consumer_for_handles!{$($ts,)+}
+        peel_impl_context_for_handles!{$($ts,)+}
     };
 }
 
-impl_consumer_for_handles! {A, B, C, D, E, F, G, H, I, J,}
+impl_context_for_handles! {A, B, C, D, E, F, G, H, I, J,}
 
 macro_rules! impl_hub_type {
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), (), ($($accum:ty,)*)) => { ($($accum,)*) };
     ($slf:ident, ($($prev_xs:ident,)*), ($x:ident, $($xs:ident,)*), (), ($($ys:ident,)*), ($($accum:ty,)*)) => {
         impl_hub_type!($slf, ($($prev_xs,)* $x,), ($($xs,)*), (), ($($ys,)*),
-            ($($accum,)* ThreadHandle<Thread<$x, (($($prev_xs,)*), ($($xs,)* <$slf as ThreadInfo>::Component, $($ys,)*))>>,))
+            ($($accum,)* ThreadHandle<Thread<$x, (($($prev_xs,)*), ($($xs,)* $slf, $($ys,)*))>>,))
     };
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), ($y:ident, $($ys:ident,)*), ($($accum:ty,)*)) => {
         impl_hub_type!($slf, ($($prev_xs,)*), (), ($($prev_ys,)* $y,), ($($ys,)*),
-            ($($accum,)* ThreadHandle<Thread<$y, (($($prev_xs,)* <$slf as ThreadInfo>::Component, $($prev_ys,)*), ($($ys,)*))>>,))
+            ($($accum,)* ThreadHandle<Thread<$y, (($($prev_xs,)* $slf, $($prev_ys,)*), ($($ys,)*))>>,))
     };
 }
 
@@ -113,7 +111,7 @@ macro_rules! impl_hubs {
     (($($ts:ident,)*), ()) => {};
     (($($ts:ident,)*), ($u:ident, $($us:ident,)*)) => {
         impl<$($ts: Send + 'static,)* $($us: Send + 'static,)*> Hub for (($($ts,)*), ($($us,)*)) {
-            type Handles<$u: ThreadInfo> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
+            type Handles<$u: Send + 'static> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
         }
         impl_hubs!{($($ts,)* $u,), ($($us,)*)}
     };
@@ -188,7 +186,7 @@ macro_rules! peel_channel_builder {
 macro_rules! impl_channel_builder {
     () => {};
     ($($ts:ident,)*) => {
-        impl<$($ts:ThreadInfo + Send ,)*> ChannelBuilder for ($($ts,)*) {
+        impl<$($ts:ThreadInfo + Send,)*> ChannelBuilder for ($($ts,)*) {
             type Channels = ($(Channel<$ts>,)*);
             fn get_channels() -> Self::Channels {
                 ($(<$ts as ThreadInfo>::make_channel(),)*)
