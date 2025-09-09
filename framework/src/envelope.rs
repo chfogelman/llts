@@ -43,7 +43,23 @@ const _: () = const { assert!(mem::size_of::<Envelope<[u8; 1024]>>() == 32) };
 // thread. They are not converted to [`EnvelopeBuilder`]s until it is time to publish to other
 // threads.
 #[repr(transparent)]
-struct CopyEnvelope<Msg: Copy + Send + 'static>(Msg);
+pub(crate) struct CopyEnvelope<Msg: Copy + Send + 'static>(Msg);
+
+impl<Msg: Copy + Send + 'static> CopyEnvelope<Msg> {
+    /// Allows direct construction of [`CopyEnvelope`]s. This is used in this crate to send
+    /// lifecycle messages between threads. This function checks for the proper size, unlike the
+    /// `publish` macro which will not construct the wrong size.
+    pub(crate) fn new(msg: Msg) -> Self {
+        struct Check<T>(T);
+        impl<T> Check<T> {
+            const VALID: () = assert!(std::mem::size_of::<T>() <= BUF_SIZE);
+        }
+        let _ = Check::<Msg>::VALID;
+
+        Self(msg)
+    }
+}
+
 #[repr(transparent)]
 struct SyncEnvelope<Msg: Send + Sync + 'static>(Msg);
 #[repr(transparent)]
@@ -257,6 +273,10 @@ mod test {
                 fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                     helper(self, msg)
                 }
+
+                fn stop(&mut self) {
+                    unimplemented!()
+                }
             }
             publish!(&mut Ctx, 0i32);
         }
@@ -276,9 +296,15 @@ mod test {
 
             impl Context for Ctx {
                 fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    helper(self, msg)
+                    msg.alloc_envelope();
+                    //helper(self, msg)
+                }
+
+                fn stop(&mut self) {
+                    unimplemented!()
                 }
             }
+
             let val = [0i32; 8];
             publish!(&mut Ctx, val);
         }
@@ -299,6 +325,10 @@ mod test {
             impl Context for Ctx {
                 fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                     helper(self, msg)
+                }
+
+                fn stop(&mut self) {
+                    unimplemented!()
                 }
             }
             let val = String::new();
@@ -324,6 +354,10 @@ mod test {
                 fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                     helper(self, msg)
                 }
+
+                fn stop(&mut self) {
+                    unimplemented!()
+                }
             }
 
             let val = NotCopy;
@@ -346,6 +380,10 @@ mod test {
             impl Context for Ctx {
                 fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                     helper(self, msg)
+                }
+
+                fn stop(&mut self) {
+                    unimplemented!()
                 }
             }
 

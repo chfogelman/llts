@@ -6,13 +6,14 @@ mod thread_builder;
 
 pub use messages::*;
 pub use thread_builder::ThreadBuilder;
-pub use thread_builder::ThreadStart;
 
 use envelope::ThreadLocalEnvelope;
 
 pub trait Context {
     #[doc(hidden)]
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
+
+    fn stop(&mut self);
 }
 
 #[macro_export]
@@ -46,6 +47,8 @@ impl<Msg, T> Handler<Msg> for &mut T {
 /// No-op [`Context`] implementation for `()`
 impl Context for () {
     fn publish<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
+
+    fn stop(&mut self) {}
 }
 
 pub struct ChainedComponent<T, U>(pub T, pub U);
@@ -73,6 +76,10 @@ where
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
         <H as Handler<Msg>>::handle(self.handler_ref, self.ctx_ref, msg.get());
         self.ctx_ref.publish(msg);
+    }
+
+    fn stop(&mut self) {
+        self.ctx_ref.stop();
     }
 }
 
@@ -141,6 +148,10 @@ mod test {
             fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                 <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
             }
+
+            fn stop(&mut self) {
+                unimplemented!()
+            }
         }
 
         let mut tester = Tester(false);
@@ -169,6 +180,10 @@ mod test {
         impl Context for Tester {
             fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                 <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
+            }
+
+            fn stop(&mut self) {
+                unimplemented!()
             }
         }
 

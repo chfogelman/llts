@@ -1,36 +1,78 @@
-use crate::envelope::{Envelope, EnvelopeBuilder};
-use crate::{Context, Handler, PollEvent, ThreadLocalEnvelope};
+use crate::envelope::{CopyEnvelope, Envelope, EnvelopeBuilder};
+use crate::{Context, Handler, ThreadLocalEnvelope, messages};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
+
+#[derive(Clone, Copy)]
+struct Shutdown;
+
+struct ThreadContext<T: ThreadInfo> {
+    senders: T::Senders,
+    stop_requested: bool,
+}
+
+impl<T: ThreadInfo> Context for ThreadContext<T> {
+    fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+        self.senders.send(msg);
+    }
+
+    fn stop(&mut self) {
+        self.stop_requested = true;
+        self.senders.try_send(CopyEnvelope::new(Shutdown));
+    }
+}
+
+trait IncomingMsgFilter<Msg>: Context {
+    fn filter<Hlr>(handler: &mut Hlr, ctx: &mut Self, msg: &Msg);
+}
+
+impl<Msg, T: ThreadInfo> IncomingMsgFilter<Msg> for ThreadContext<T> {
+    default fn filter<Hlr>(handler: &mut Hlr, ctx: &mut Self, msg: &Msg) {
+        <Hlr as Handler<Msg>>::handle(handler, ctx, msg);
+    }
+}
+
+impl<T: ThreadInfo> IncomingMsgFilter<Shutdown> for ThreadContext<T> {
+    fn filter<Hlr>(_: &mut Hlr, ctx: &mut Self, _: &Shutdown) {
+        ctx.stop_requested = true;
+    }
+}
 
 pub struct Thread<Hlr: Send + 'static, Others: Hub + 'static> {
     component: Hlr,
     receiver: Receiver<Envelope<Self>>,
-    senders: <Others as Hub>::Handles<Hlr>,
+    context: ThreadContext<Self>,
 }
 
 impl<Hlr: Send, H: Hub> Thread<Hlr, H> {
-    fn poll(&mut self) {
-        self.dispatch_msg(&PollEvent);
-        let next = self.receiver.try_recv();
-        match next {
-            Ok(msg) => msg.dispatch_onto(self),
-            Err(TryRecvError::Empty) => {},
-            Err(TryRecvError::Disconnected) => {
-                eprintln!("Exiting due to disconnection");
-                std::process::exit(-1);
-            },
+    fn start_loop(&mut self) {
+        // `stop` is a request, not a command. It's okay to wait until the start of the next loop
+        // to see if we need to stop. If a thread needs to stop the process immediately, it should
+        // call `panic!`.
+        while !self.context.stop_requested {
+            self.dispatch_msg(&messages::PollEvent);
+            let next = self.receiver.try_recv();
+            match next {
+                Ok(msg) => {
+                    msg.dispatch_onto(self);
+                },
+                Err(TryRecvError::Empty) => {},
+                Err(TryRecvError::Disconnected) => {
+                    unreachable!();
+                },
+            }
         }
     }
 }
 
 pub trait ThreadBuilder {
     type Threads;
-    fn build_threads(self) -> Self::Threads;
+
+    fn start_threads(self) -> Vec<thread::Result<()>>;
 }
 
 pub trait Hub {
-    type Handles<T: Send + 'static>: Context + Send + 'static;
+    type Handles<T: Send + 'static>: Senders + Send + 'static;
 }
 
 type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
@@ -39,9 +81,15 @@ pub trait ThreadInfo {
     type Channel;
     type Sender;
     type Receiver;
+    type Senders: Senders;
     fn make_channel() -> Channel<Self>;
+
     fn dispatch_msg<Msg>(&mut self, msg: &Msg);
-    fn spawn(self) -> thread::JoinHandle<()>;
+
+    fn spawn<'scope, 'env: 'scope>(
+        self,
+        scope: &'scope thread::Scope<'scope, 'env>,
+    ) -> thread::ScopedJoinHandle<'scope, ()>;
 }
 
 impl<Hlr, B: Hub> ThreadInfo for Thread<Hlr, B>
@@ -51,26 +99,40 @@ where
     type Sender = Sender<Envelope<Self>>;
     type Receiver = Receiver<Envelope<Self>>;
     type Channel = Channel<Self>;
+    type Senders = <B as Hub>::Handles<Hlr>;
 
     fn make_channel() -> Channel<Self> {
         channel()
     }
 
     fn dispatch_msg<Msg>(&mut self, msg: &Msg) {
-        <Hlr as Handler<Msg>>::handle(&mut self.component, &mut self.senders, msg);
+        <ThreadContext<Self> as IncomingMsgFilter<Msg>>::filter(&mut self.component, &mut self.context, msg);
     }
 
-    fn spawn(self) -> thread::JoinHandle<()> {
+    fn spawn<'scope, 'env: 'scope>(
+        self,
+        scope: &'scope thread::Scope<'scope, 'env>,
+    ) -> thread::ScopedJoinHandle<'scope, ()> {
         let mut thread_impl = self;
-        thread::spawn(move || {
-            loop {
-                thread_impl.poll();
-            }
+        scope.spawn(move || {
+            thread_impl.start_loop();
         })
     }
 }
 
 type ThreadHandle<T> = Sender<Envelope<T>>;
+
+pub trait Senders {
+    fn send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
+
+    fn try_send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
+}
+
+impl Senders for () {
+    fn send<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
+
+    fn try_send<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
+}
 
 macro_rules! peel_impl_context_for_handles {
     ($t:ident, $($ts:ident,)*) => {
@@ -81,12 +143,19 @@ macro_rules! peel_impl_context_for_handles {
 macro_rules! impl_context_for_handles {
     () => {};
     ($($ts:ident,)+) => {
-        impl<$($ts: ThreadInfo,)+> Context for ($(ThreadHandle<$ts>,)+) {
+        impl<$($ts: ThreadInfo,)+> Senders for ($(ThreadHandle<$ts>,)+) {
             #[allow(non_snake_case)]
-            fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+            fn send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
                 let msg = msg.alloc_envelope();
                 let ($($ts,)+) = self;
                 $({$ts.send(msg.build_envelope()).unwrap()})+
+            }
+
+            #[allow(non_snake_case)]
+            fn try_send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+                let msg = msg.alloc_envelope();
+                let ($($ts,)+) = self;
+                let _ = ($($ts.send(msg.build_envelope()),)+);
             }
         }
         peel_impl_context_for_handles!{$($ts,)+}
@@ -149,17 +218,23 @@ macro_rules! impl_thread_builder {
             type Threads = thread_builder_threads_type!((), ($($ts,)+), ());
 
             #[allow(non_snake_case)]
-            fn build_threads(self) -> Self::Threads {
+            fn start_threads(self) -> Vec<thread::Result<()>> {
                 let channels = <Self::Threads as ChannelBuilder>::get_channels();
                 let channels = channels.transpose();
                 let channels = ChannelArranger::arrange(channels);
                 let ($($ts,)+) = self;
                 let ($($channels,)+) = channels;
-                ($(Thread{
-                    component: $ts,
-                    receiver: $channels.0,
-                    senders: $channels.1,
-                },)+)
+                thread::scope(|s| {
+                    let handles = vec![$(Thread {
+                        component: $ts,
+                        receiver: $channels.0,
+                        context: ThreadContext {
+                            senders: $channels.1,
+                            stop_requested: false,
+                        }
+                    }.spawn(s),)+];
+                    handles.into_iter().map(|h| h.join()).collect()
+                })
             }
         }
         peel_impl_thread_builder!{($($ts,)+), ($($channels,)+)}
@@ -284,27 +359,3 @@ impl_transpose2! {
     (A1, B1, C1, D1, E1, F1, G1, H1, I1, J1,),
     (A2, B2, C2, D2, E2, F2, G2, H2, I2, J2,)
 }
-
-pub trait ThreadStart {
-    fn start(self) -> Vec<thread::JoinHandle<()>>;
-}
-
-macro_rules! peel_impl_thread_start {
-    ($t:ident, $($ts:ident,)*) => { impl_thread_start!{$($ts,)*} };
-}
-
-macro_rules! impl_thread_start {
-    () => {};
-    ($($ts:ident,)+) => {
-        #[allow(non_snake_case)]
-        impl<$($ts: ThreadInfo,)+> ThreadStart for ($($ts,)+) {
-            fn start(self) -> Vec<thread::JoinHandle<()>> {
-                let ($($ts,)+) = self;
-                vec![$($ts.spawn(),)+]
-            }
-        }
-        peel_impl_thread_start!{$($ts,)+}
-    }
-}
-
-impl_thread_start! {A, B, C, D, E, F, G, H, I, J,}

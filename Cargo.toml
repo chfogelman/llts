@@ -1,9 +1,11 @@
 [profile.dev]
 incremental = true
+panic = "abort"
 
 [profile.release]
 codegen-units = 1
 lto = true
+panic = "abort"
 
 [workspace]
 resolver = "3"
