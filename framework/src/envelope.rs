@@ -1,7 +1,8 @@
 use crate::Context;
 use crate::thread_builder::ThreadInfo;
+use std::marker::PhantomData;
+use std::mem;
 use std::sync::Arc;
-use std::{marker::PhantomData, mem};
 
 /// Type-erased function for dispatching the contents of an envelope onto a thread
 /// managing a handler chain.
@@ -17,7 +18,8 @@ type EnvelopeBuf = [mem::MaybeUninit<u8>; BUF_SIZE];
 /// It provides optimizations for small [`Copy`] types as well as [`Arc`]. You should not need to
 /// use this type directly. Instead, use [`crate::publish`]. Because it may contain a type-erased
 /// [`Arc`], it must _not_ implement [`Copy`] itself. The derived Clone implementation would also
-/// be incorrect for this type.
+/// be incorrect for this type. [`Envelope::dispatch_onto`] must consume the Envelope and drop the
+/// contained message
 pub struct Envelope<Dst> {
     dispatcher: DispatchFn<Dst>,
     buf: EnvelopeBuf,
@@ -41,15 +43,22 @@ const _: () = const { assert!(mem::size_of::<Envelope<[u8; 1024]>>() == 32) };
 
 // These are the [`ThreadLocalEnvelope`] types that are used to publish to handlers on the same
 // thread. They are not converted to [`EnvelopeBuilder`]s until it is time to publish to other
-// threads.
+// threads. We implement them as a wrapper over a reference so that it's cheap to pass them around
+// in registers when calling [`Handler::handle`] on one thread. Only once it's time to allocate for
+// the message and broadcast it to other threads do we need to take ownership of the message again.
 #[repr(transparent)]
-pub(crate) struct CopyEnvelope<Msg: Copy + Send + 'static>(Msg);
+struct SyncEnvelope<'a, Msg: Send + Sync + 'static>(&'a mut mem::ManuallyDrop<Msg>);
+#[repr(transparent)]
+struct ArcEnvelope<'a, Msg: Send + Sync + 'static>(&'a mut mem::ManuallyDrop<Arc<Msg>>);
+#[repr(transparent)]
+pub(crate) struct CopyEnvelope<'a, Msg: Copy + Send + 'static>(&'a Msg);
 
-impl<Msg: Copy + Send + 'static> CopyEnvelope<Msg> {
-    /// Allows direct construction of [`CopyEnvelope`]s. This is used in this crate to send
-    /// lifecycle messages between threads. This function checks for the proper size, unlike the
-    /// `publish` macro which will not construct the wrong size.
-    pub(crate) fn new(msg: Msg) -> Self {
+const _: () = const { assert!(mem::size_of::<SyncEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
+const _: () = const { assert!(mem::size_of::<ArcEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
+const _: () = const { assert!(mem::size_of::<CopyEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
+
+impl<'a, Msg: Copy + Send + 'static> CopyEnvelope<'a, Msg> {
+    pub(crate) fn new(msg: &'a Msg) -> Self {
         struct Check<T>(T);
         impl<T> Check<T> {
             const VALID: () = assert!(std::mem::size_of::<T>() <= BUF_SIZE);
@@ -60,44 +69,18 @@ impl<Msg: Copy + Send + 'static> CopyEnvelope<Msg> {
     }
 }
 
-#[repr(transparent)]
-struct SyncEnvelope<Msg: Send + Sync + 'static>(Msg);
-#[repr(transparent)]
-struct ArcEnvelope<Msg: Send + Sync + 'static>(Arc<Msg>);
-
 // These are the [`EnvelopeBuilder`] types that may contain an allocated [`Arc`] that will be
 // cloned when publishing to each other thread. These are only created after the contained message
 // has been published to each thread-local [`Handler`].
 #[repr(transparent)]
-struct CopyEnvelopeBuilder<Msg>(Msg);
-#[repr(transparent)]
 struct SyncEnvelopeBuilder<Msg>(Arc<Msg>);
 #[repr(transparent)]
 struct ArcEnvelopeBuilder<Msg>(Arc<Msg>);
+#[repr(transparent)]
+struct CopyEnvelopeBuilder<Msg>(Msg);
 
 pub(crate) trait EnvelopeBuilder<Msg> {
     fn build_envelope<Dst: ThreadInfo>(&self) -> Envelope<Dst>;
-}
-
-impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
-    fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-        unsafe fn copy_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
-            unsafe {
-                let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
-                thread.dispatch_msg(&msg);
-            }
-        }
-
-        let buf = unsafe {
-            let mut buf = [mem::MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Msg, self.0);
-            buf
-        };
-        Envelope {
-            dispatcher: copy_dispatcher::<Thread, Msg>,
-            buf,
-        }
-    }
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Msg> {
@@ -146,22 +129,45 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg
     }
 }
 
+impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
+    fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
+        unsafe fn copy_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+            unsafe {
+                let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
+                thread.dispatch_msg(&msg);
+            }
+        }
+
+        let buf = unsafe {
+            let mut buf = [mem::MaybeUninit::uninit(); _];
+            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Msg, self.0);
+            buf
+        };
+        Envelope {
+            dispatcher: copy_dispatcher::<Thread, Msg>,
+            buf,
+        }
+    }
+}
+
 mod private {
     pub trait Sealed {}
 }
 
-impl<Msg: Copy + Send + 'static> private::Sealed for CopyEnvelope<Msg> {}
-impl<Msg: Send + Sync + 'static> private::Sealed for SyncEnvelope<Msg> {}
-impl<Msg: Send + Sync + 'static> private::Sealed for ArcEnvelope<Msg> {}
+impl<Msg: Send + Sync + 'static> private::Sealed for SyncEnvelope<'_, Msg> {}
+impl<Msg: Send + Sync + 'static> private::Sealed for ArcEnvelope<'_, Msg> {}
+impl<Msg: Copy + Send + 'static> private::Sealed for CopyEnvelope<'_, Msg> {}
 
 pub trait ThreadLocalEnvelope<Msg>: private::Sealed {
+    #[must_use]
     fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg>;
     fn get(&self) -> &Msg;
 }
 
-impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<Msg> {
+impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<'_, Msg> {
     fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg> {
-        CopyEnvelopeBuilder(self.0)
+        // SAFETY: The referent is not dropped in `forward_as_envelope`
+        SyncEnvelopeBuilder(Arc::new(unsafe { mem::ManuallyDrop::take(self.0) }))
     }
 
     fn get(&self) -> &Msg {
@@ -169,9 +175,10 @@ impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<Msg> 
     }
 }
 
-impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<Msg> {
+impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for ArcEnvelope<'_, Msg> {
     fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg> {
-        SyncEnvelopeBuilder(Arc::new(self.0))
+        // SAFETY: The referent is not dropped in `forward_as_envelope`
+        ArcEnvelopeBuilder(unsafe { mem::ManuallyDrop::take(self.0) })
     }
 
     fn get(&self) -> &Msg {
@@ -179,9 +186,9 @@ impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<Msg> 
     }
 }
 
-impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for ArcEnvelope<Msg> {
+impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<'_, Msg> {
     fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg> {
-        ArcEnvelopeBuilder(self.0)
+        CopyEnvelopeBuilder(*self.0)
     }
 
     fn get(&self) -> &Msg {
@@ -221,24 +228,27 @@ pub trait __forward_as_envelope_arc<T> {
 impl<T: Copy + Send + Sync + 'static> __forward_as_envelope_copy<T> for &'_ &'_ __spec_envelope_maker<T> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: T) {
         if const { mem::size_of::<T>() <= BUF_SIZE } {
-            ctx.publish(CopyEnvelope(val));
+            ctx.publish(CopyEnvelope(&val));
         } else {
-            ctx.publish(SyncEnvelope(val));
+            let mut val = mem::ManuallyDrop::new(val);
+            ctx.publish(SyncEnvelope(&mut val));
         }
     }
 }
 
-// Then try Arc
+// Then see if this is already an [`Arc`]
 impl<T: Send + Sync + 'static> __forward_as_envelope_arc<Arc<T>> for &'_ __spec_envelope_maker<Arc<T>> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: Arc<T>) {
-        ctx.publish(ArcEnvelope(val));
+        let mut val = mem::ManuallyDrop::new(val);
+        ctx.publish(ArcEnvelope(&mut val));
     }
 }
 
 // Then fall back to allocating at publish
 impl<T: Send + Sync + 'static> __forward_as_envelope_sync<T> for __spec_envelope_maker<T> {
     fn forward_as_envelope(&self, ctx: &mut impl Context, val: T) {
-        ctx.publish(SyncEnvelope(val));
+        let mut val = mem::ManuallyDrop::new(val);
+        ctx.publish(SyncEnvelope(&mut val));
     }
 }
 
@@ -249,12 +259,17 @@ mod test {
     use crate::Handler;
     use crate::publish;
 
-    fn helper<S, T>(s: &mut S, t: T) {
-        <S as Handler<T>>::handle(s, &mut (), &t);
+    fn helper<S, T>(s: &mut S, t: impl ThreadLocalEnvelope<T>) {
+        s.handle(&mut (), &t);
+        // alloc_envelope ensures the value is dropped so that the tests do not fail miri
+        let _ = t.alloc_envelope();
     }
 
     #[test]
     fn envelope_type_selection() {
+        // WARNING: This test contains nonstandard usage of [`Handler`]. We are simply ensuring that
+        // the correct envelope type is selected and published, and the [`Handler`] trait already
+        // has the signature we need. You should not implement `Handler` for envelope types.
         {
             struct Ctx;
             impl<T> Handler<T> for Ctx {
@@ -263,7 +278,7 @@ mod test {
                 }
             }
 
-            impl Handler<CopyEnvelope<i32>> for Ctx {
+            impl Handler<CopyEnvelope<'_, i32>> for Ctx {
                 fn handle(&mut self, _: &mut impl Context, _: &CopyEnvelope<i32>) {
                     println!("Found correct handler.");
                 }
@@ -288,7 +303,7 @@ mod test {
                 }
             }
 
-            impl Handler<SyncEnvelope<[i32; 8]>> for Ctx {
+            impl Handler<SyncEnvelope<'_, [i32; 8]>> for Ctx {
                 fn handle(&mut self, _: &mut impl Context, _: &SyncEnvelope<[i32; 8]>) {
                     println!("Found correct handler.");
                 }
@@ -296,8 +311,7 @@ mod test {
 
             impl Context for Ctx {
                 fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    msg.alloc_envelope();
-                    //helper(self, msg)
+                    helper(self, msg)
                 }
 
                 fn stop(&mut self) {
@@ -316,7 +330,7 @@ mod test {
                 }
             }
 
-            impl Handler<SyncEnvelope<String>> for Ctx {
+            impl Handler<SyncEnvelope<'_, String>> for Ctx {
                 fn handle(&mut self, _: &mut impl Context, _: &SyncEnvelope<String>) {
                     println!("Found correct handler.");
                 }
@@ -344,7 +358,7 @@ mod test {
                 }
             }
 
-            impl Handler<SyncEnvelope<NotCopy>> for Ctx {
+            impl Handler<SyncEnvelope<'_, NotCopy>> for Ctx {
                 fn handle(&mut self, _: &mut impl Context, _: &SyncEnvelope<NotCopy>) {
                     println!("Found correct handler.");
                 }
@@ -371,7 +385,7 @@ mod test {
                 }
             }
 
-            impl Handler<ArcEnvelope<i32>> for Ctx {
+            impl Handler<ArcEnvelope<'_, i32>> for Ctx {
                 fn handle(&mut self, _: &mut impl Context, _: &ArcEnvelope<i32>) {
                     println!("Found correct handler.");
                 }

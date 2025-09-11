@@ -18,7 +18,7 @@ impl<T: ThreadInfo> Context for ThreadContext<T> {
 
     fn stop(&mut self) {
         self.stop_requested = true;
-        self.senders.try_send(CopyEnvelope::new(Shutdown));
+        self.senders.try_send(CopyEnvelope::new(&Shutdown));
     }
 }
 
