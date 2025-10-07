@@ -1,7 +1,7 @@
 #![feature(min_specialization)]
+use std::sync::Arc;
 
 use framework::{Handler, PollEvent, ThreadBuilder, publish};
-use std::sync::Arc;
 
 struct ThreadTheFirst;
 
@@ -15,7 +15,7 @@ impl Handler<PollEvent> for ThreadTheFirst {
 
 struct ThreadTheSecond {
     received_i32: bool,
-    finished: bool,
+    finished:     bool,
 }
 
 impl Handler<i32> for ThreadTheSecond {
@@ -37,7 +37,7 @@ fn test() {
         ThreadTheFirst,
         ThreadTheSecond {
             received_i32: false,
-            finished: false,
+            finished:     false,
         },
     ));
 }

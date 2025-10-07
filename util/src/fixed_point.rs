@@ -3,8 +3,8 @@ use zerocopy::*;
 macro_rules! make_fixed_point { ($($name:ident, $int:ty)+) => {$(
 
 #[repr(transparent)]
-#[derive(IntoBytes, FromZeros, KnownLayout, Immutable)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord,)]
+#[derive(IntoBytes, FromBytes, KnownLayout, Immutable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct $name<const EXPONENT: $int = 0>(pub(self) $int);
 
 impl<const E: $int> $name<E> {
@@ -29,8 +29,18 @@ impl<const E: $int> $name<E> {
         (self.0 / Self::MULTIPLICAND, Self(self.0 % Self::MULTIPLICAND))
     }
 
-    pub const fn raw(self) -> $int {
+    pub const fn into_raw(self) -> $int {
         self.0
+    }
+
+    pub const fn from_raw(val: $int) -> Self {
+        Self(val)
+    }
+}
+
+impl<const E: $int> Default for $name<E> {
+    fn default() -> Self {
+        Self(0)
     }
 }
 

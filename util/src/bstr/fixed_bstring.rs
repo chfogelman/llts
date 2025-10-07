@@ -1,7 +1,7 @@
 use zerocopy::*;
 
 #[repr(transparent)]
-#[derive(IntoBytes, FromZeros, KnownLayout, Immutable, Unaligned, Clone, Copy, Eq)]
+#[derive(IntoBytes, FromBytes, KnownLayout, Immutable, Unaligned, Clone, Copy, Eq)]
 pub struct FixedString<const N: usize, const E: u8 = 0>([u8; N]);
 
 impl<const N: usize, const E: u8> FixedString<N, E> {
@@ -23,7 +23,7 @@ impl<const N: usize, const E: u8> FixedString<N, E> {
     }
 
     fn bytes(&self) -> impl Iterator<Item = u8> {
-        self.0.into_iter().take_while(|&b| b != 0)
+        self.0.into_iter().take_while(|&b| b != E)
     }
 }
 
@@ -54,7 +54,10 @@ impl<const N: usize, const E: u8> std::convert::TryFrom<&str> for FixedString<N,
 
 impl<const N: usize, const E: u8> std::hash::Hash for FixedString<N, E> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(self.to_slice())
+        state.write(self.to_slice());
+
+        // Hashing the terminating byte value makes this hash prefix-free
+        state.write_u8(E)
     }
 }
 
@@ -83,7 +86,7 @@ where
     T: AsRef<[u8]> + ?Sized,
 {
     fn eq(&self, other: &T) -> bool {
-        self.bytes().eq(other.as_ref().iter().copied().take_while(|&b| b != 0))
+        self.bytes().eq(other.as_ref().iter().copied().take_while(|&b| b != E))
     }
 }
 
@@ -105,7 +108,7 @@ where
 {
     fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
         self.bytes()
-            .partial_cmp(other.as_ref().iter().copied().take_while(|&b| b != 0))
+            .partial_cmp(other.as_ref().iter().copied().take_while(|&b| b != E))
     }
 }
 

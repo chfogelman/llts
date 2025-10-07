@@ -1,0 +1,10 @@
+[package]
+name = "nasdaq"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+flate2 = { version = "1.1.4", features = ["zlib-rs"] }
+libmd = { version = "0.0.0", path = "../libmd" }
+util = { version = "0.0.0", path = "../../util" }
+zerocopy = { workspace = true }

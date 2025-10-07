@@ -1,13 +1,14 @@
-use crate::envelope::{CopyEnvelope, Envelope, EnvelopeBuilder};
-use crate::{Context, Handler, ThreadLocalEnvelope, messages};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
+
+use crate::envelope::{CopyEnvelope, Envelope, EnvelopeBuilder};
+use crate::{Context, Handler, ThreadLocalEnvelope, messages};
 
 #[derive(Clone, Copy)]
 struct Shutdown;
 
 struct ThreadContext<T: ThreadInfo> {
-    senders: T::Senders,
+    senders:        T::Senders,
     stop_requested: bool,
 }
 
@@ -40,8 +41,8 @@ impl<T: ThreadInfo> IncomingMsgFilter<Shutdown> for ThreadContext<T> {
 
 pub struct Thread<Hlr: Send + 'static, Others: Hub + 'static> {
     component: Hlr,
-    receiver: Receiver<Envelope<Self>>,
-    context: ThreadContext<Self>,
+    receiver:  Receiver<Envelope<Self>>,
+    context:   ThreadContext<Self>,
 }
 
 impl<Hlr: Send, H: Hub> Thread<Hlr, H> {

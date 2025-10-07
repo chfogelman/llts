@@ -4,10 +4,9 @@ pub mod envelope;
 pub mod messages;
 mod thread_builder;
 
+use envelope::ThreadLocalEnvelope;
 pub use messages::*;
 pub use thread_builder::ThreadBuilder;
-
-use envelope::ThreadLocalEnvelope;
 
 pub trait Context {
     #[doc(hidden)]
@@ -57,7 +56,7 @@ impl<Msg, T, U> Handler<Msg> for ChainedComponent<T, U> {
     fn handle(&mut self, ctx: &mut impl Context, msg: &Msg) {
         let mut downstream = DownstreamComponents {
             handler_ref: &mut self.1,
-            ctx_ref: &mut *ctx,
+            ctx_ref:     &mut *ctx,
         };
         <T as Handler<Msg>>::handle(&mut self.0, &mut downstream, msg);
         <U as Handler<Msg>>::handle(&mut self.1, ctx, msg);
@@ -66,7 +65,7 @@ impl<Msg, T, U> Handler<Msg> for ChainedComponent<T, U> {
 
 struct DownstreamComponents<'a, H, Ctx> {
     handler_ref: &'a mut H,
-    ctx_ref: &'a mut Ctx,
+    ctx_ref:     &'a mut Ctx,
 }
 
 impl<'a, H, Ctx> Context for DownstreamComponents<'a, H, Ctx>

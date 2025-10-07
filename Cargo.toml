@@ -1,16 +1,21 @@
 [profile.dev]
 incremental = true
-panic = "abort"
+panic = "unwind"
 
 [profile.release]
+incremental = true
+lto = "fat"
+opt-level = 3
 codegen-units = 1
-lto = true
 panic = "abort"
 
 [workspace]
 resolver = "3"
 members = [
     "framework",
-    "md",
+    "md/*",
     "util",
 ]
+
+[workspace.dependencies]
+zerocopy = { version = "0.8.27", features = ["derive"]}

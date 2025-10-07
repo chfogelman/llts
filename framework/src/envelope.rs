@@ -1,8 +1,9 @@
-use crate::Context;
-use crate::thread_builder::ThreadInfo;
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
+
+use crate::Context;
+use crate::thread_builder::ThreadInfo;
 
 /// Type-erased function for dispatching the contents of an envelope onto a thread
 /// managing a handler chain.
@@ -22,7 +23,7 @@ type EnvelopeBuf = [mem::MaybeUninit<u8>; BUF_SIZE];
 /// contained message
 pub struct Envelope<Dst> {
     dispatcher: DispatchFn<Dst>,
-    buf: EnvelopeBuf,
+    buf:        EnvelopeBuf,
 }
 
 impl<Dst: ThreadInfo> Envelope<Dst> {
@@ -256,8 +257,7 @@ impl<T: Send + Sync + 'static> __forward_as_envelope_sync<T> for __spec_envelope
 mod test {
 
     use super::*;
-    use crate::Handler;
-    use crate::publish;
+    use crate::{Handler, publish};
 
     fn helper<S, T>(s: &mut S, t: impl ThreadLocalEnvelope<T>) {
         s.handle(&mut (), &t);

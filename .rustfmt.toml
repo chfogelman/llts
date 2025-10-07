@@ -3,3 +3,7 @@ fn_call_width = 90
 reorder_imports = true
 newline_style = "Unix"
 match_block_trailing_comma = true
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+struct_field_align_threshold = 10
+use_field_init_shorthand = true
