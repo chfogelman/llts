@@ -3,7 +3,6 @@ use std::mem;
 use std::sync::Arc;
 
 use crate::Context;
-use crate::thread_builder::ThreadInfo;
 
 /// Type-erased function for dispatching the contents of an envelope onto a thread
 /// managing a handler chain.
@@ -26,7 +25,7 @@ pub struct Envelope<Dst> {
     buf:        EnvelopeBuf,
 }
 
-impl<Dst: ThreadInfo> Envelope<Dst> {
+impl<Dst: Context> Envelope<Dst> {
     pub(crate) fn dispatch_onto(self, thread: &mut Dst) {
         let Envelope { dispatcher, ref buf } = self;
 
@@ -81,17 +80,17 @@ struct ArcEnvelopeBuilder<Msg>(Arc<Msg>);
 struct CopyEnvelopeBuilder<Msg>(Msg);
 
 pub(crate) trait EnvelopeBuilder<Msg> {
-    fn build_envelope<Dst: ThreadInfo>(&self) -> Envelope<Dst>;
+    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst>;
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Msg> {
-    fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-        unsafe fn sync_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst> {
+        unsafe fn sync_dispatcher<Ctx: Context, Msg>(ctx: &mut Ctx, msg: *const ()) {
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
 
                 // Ensure dispatch as &Msg. No failure to coerce
-                thread.dispatch_msg(&*msg as &Msg);
+                ctx.dispatch(&*msg as &Msg);
             }
         }
 
@@ -101,20 +100,20 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Ms
             buf
         };
         Envelope {
-            dispatcher: sync_dispatcher::<Thread, Msg>,
+            dispatcher: sync_dispatcher::<Dst, Msg>,
             buf,
         }
     }
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg> {
-    fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-        unsafe fn arc_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst> {
+        unsafe fn arc_dispatcher<Ctx: Context, Msg>(ctx: &mut Ctx, msg: *const ()) {
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
 
                 // Ensure dispatch as Arc. No deref coercion
-                thread.dispatch_msg(&msg as &Arc<_>);
+                ctx.dispatch(&msg as &Arc<_>);
             }
         }
 
@@ -124,18 +123,18 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg
             buf
         };
         Envelope {
-            dispatcher: arc_dispatcher::<Thread, Msg>,
+            dispatcher: arc_dispatcher::<Dst, Msg>,
             buf,
         }
     }
 }
 
 impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
-    fn build_envelope<Thread: ThreadInfo>(&self) -> Envelope<Thread> {
-        unsafe fn copy_dispatcher<T: ThreadInfo, Msg>(thread: &mut T, msg: *const ()) {
+    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst> {
+        unsafe fn copy_dispatcher<Ctx: Context, Msg>(thread: &mut Ctx, msg: *const ()) {
             unsafe {
                 let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
-                thread.dispatch_msg(&msg);
+                thread.dispatch(&msg);
             }
         }
 
@@ -145,7 +144,7 @@ impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Ms
             buf
         };
         Envelope {
-            dispatcher: copy_dispatcher::<Thread, Msg>,
+            dispatcher: copy_dispatcher::<Dst, Msg>,
             buf,
         }
     }

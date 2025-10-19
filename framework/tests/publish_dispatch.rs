@@ -1,6 +1,7 @@
 #![feature(min_specialization)]
 use std::sync::Arc;
 
+use framework::container::{self, Container};
 use framework::{Handler, PollEvent, ThreadBuilder, publish};
 
 struct ThreadTheFirst;
@@ -33,11 +34,23 @@ impl Handler<Arc<i32>> for ThreadTheSecond {
 
 #[test]
 fn test() {
+    std::panic::set_hook(Box::new(|payload| {
+        if let Some(location) = payload.location() {
+            eprintln!("{},{}", location.file(), location.line());
+        }
+        if let Some(s) = payload.payload().downcast_ref::<String>() {
+            eprintln!("{}", s);
+        }
+        if let Some(s) = payload.payload().downcast_ref::<&str>() {
+            eprintln!("{}", s);
+        }
+        std::process::exit(-1)
+    }));
     let _handles = ThreadBuilder::start_threads((
-        ThreadTheFirst,
-        ThreadTheSecond {
+        container::PipelineBuilder.with(ThreadTheFirst),
+        container::PipelineBuilder.with(ThreadTheSecond {
             received_i32: false,
             finished:     false,
-        },
+        }),
     ));
 }

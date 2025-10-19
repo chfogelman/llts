@@ -1,61 +1,122 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
+use crate::container::Container;
 use crate::envelope::{CopyEnvelope, Envelope, EnvelopeBuilder};
-use crate::{Context, Handler, ThreadLocalEnvelope, messages};
+use crate::{Context, ThreadLocalEnvelope, messages};
 
 #[derive(Clone, Copy)]
 struct Shutdown;
 
-struct ThreadContext<T: ThreadInfo> {
+struct ThreadContext<T>
+where
+    T: ThreadInfo,
+{
     senders:        T::Senders,
-    stop_requested: bool,
+    stop_requested: Cell<bool>,
 }
 
-impl<T: ThreadInfo> Context for ThreadContext<T> {
+impl<T> Context for Rc<ThreadContext<T>>
+where
+    T: ThreadInfo,
+{
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
         self.senders.send(msg);
     }
 
     fn stop(&mut self) {
-        self.stop_requested = true;
+        self.stop_requested.set(true);
         self.senders.try_send(CopyEnvelope::new(&Shutdown));
     }
 }
 
-trait IncomingMsgFilter<Msg>: Context {
-    fn filter<Hlr>(handler: &mut Hlr, ctx: &mut Self, msg: &Msg);
+pub struct Pipeline<T>
+where
+    T: ThreadInfo,
+{
+    egress:  Rc<ThreadContext<T>>,
+    ingress: <<T as ThreadInfo>::Container as Container>::WithContext<Rc<ThreadContext<T>>>,
 }
 
-impl<Msg, T: ThreadInfo> IncomingMsgFilter<Msg> for ThreadContext<T> {
-    default fn filter<Hlr>(handler: &mut Hlr, ctx: &mut Self, msg: &Msg) {
-        <Hlr as Handler<Msg>>::handle(handler, ctx, msg);
+trait MsgInFilter<Msg> {
+    fn filter(&mut self, msg: &Msg);
+}
+
+impl<Msg, T> MsgInFilter<Msg> for Pipeline<T>
+where
+    T: ThreadInfo,
+{
+    default fn filter(&mut self, msg: &Msg) {
+        self.ingress.dispatch(msg)
     }
 }
 
-impl<T: ThreadInfo> IncomingMsgFilter<Shutdown> for ThreadContext<T> {
-    fn filter<Hlr>(_: &mut Hlr, ctx: &mut Self, _: &Shutdown) {
-        ctx.stop_requested = true;
+impl<T> MsgInFilter<Shutdown> for Pipeline<T>
+where
+    T: ThreadInfo,
+{
+    fn filter(&mut self, _: &Shutdown) {
+        self.egress.stop_requested.set(true)
     }
 }
 
-pub struct Thread<Hlr: Send + 'static, Others: Hub + 'static> {
-    component: Hlr,
-    receiver:  Receiver<Envelope<Self>>,
-    context:   ThreadContext<Self>,
+impl<T> Context for Pipeline<T>
+where
+    T: ThreadInfo,
+{
+    fn publish<Msg>(&mut self, _: impl ThreadLocalEnvelope<Msg>) {
+        unimplemented!()
+    }
+
+    fn dispatch<Msg>(&mut self, msg: &Msg) {
+        <Self as MsgInFilter<Msg>>::filter(self, msg)
+    }
+
+    fn stop(&mut self) {
+        unimplemented!()
+    }
 }
 
-impl<Hlr: Send, H: Hub> Thread<Hlr, H> {
-    fn start_loop(&mut self) {
-        // `stop` is a request, not a command. It's okay to wait until the start of the next loop
-        // to see if we need to stop. If a thread needs to stop the process immediately, it should
-        // call `panic!`.
-        while !self.context.stop_requested {
-            self.dispatch_msg(&messages::PollEvent);
-            let next = self.receiver.try_recv();
+pub struct Thread<C, Others>
+where
+    C: Container + Send + 'static,
+    Others: Hub + 'static,
+{
+    container: C,
+    receiver:  Receiver<Envelope<Pipeline<Self>>>,
+    senders:   <Self as ThreadInfo>::Senders,
+}
+
+impl<C, H> Thread<C, H>
+where
+    C: Container + Send,
+    H: Hub,
+{
+    fn start_event_loop(self) {
+        let Self {
+            container,
+            receiver,
+            senders,
+        } = self;
+
+        let thread_context = Rc::new(ThreadContext {
+            senders,
+            stop_requested: Cell::new(false),
+        });
+
+        let mut pipeline = Pipeline {
+            egress:  Rc::clone(&thread_context),
+            ingress: container.with_context(Rc::clone(&thread_context)),
+        };
+
+        while !thread_context.stop_requested.get() {
+            pipeline.dispatch(&messages::PollEvent);
+            let next = receiver.try_recv();
             match next {
                 Ok(msg) => {
-                    msg.dispatch_onto(self);
+                    msg.dispatch_onto(&mut pipeline);
                 },
                 Err(TryRecvError::Empty) => {},
                 Err(TryRecvError::Disconnected) => {
@@ -73,19 +134,18 @@ pub trait ThreadBuilder {
 }
 
 pub trait Hub {
-    type Handles<T: Send + 'static>: Senders + Send + 'static;
+    type Handles<T: Container + Send + 'static>: Senders + Send + 'static;
 }
 
 type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
 
 pub trait ThreadInfo {
+    type Container: Container;
     type Channel;
     type Sender;
     type Receiver;
     type Senders: Senders;
     fn make_channel() -> Channel<Self>;
-
-    fn dispatch_msg<Msg>(&mut self, msg: &Msg);
 
     fn spawn<'scope, 'env: 'scope>(
         self,
@@ -93,46 +153,44 @@ pub trait ThreadInfo {
     ) -> thread::ScopedJoinHandle<'scope, ()>;
 }
 
-impl<Hlr, B: Hub> ThreadInfo for Thread<Hlr, B>
+impl<C, B> ThreadInfo for Thread<C, B>
 where
-    Hlr: Send,
+    C: Container + Send,
+    B: Hub,
 {
-    type Sender = Sender<Envelope<Self>>;
-    type Receiver = Receiver<Envelope<Self>>;
+    type Container = C;
+    type Sender = Sender<Envelope<Pipeline<Self>>>;
+    type Receiver = Receiver<Envelope<Pipeline<Self>>>;
     type Channel = Channel<Self>;
-    type Senders = <B as Hub>::Handles<Hlr>;
+    type Senders = <B as Hub>::Handles<C>;
 
     fn make_channel() -> Channel<Self> {
         channel()
-    }
-
-    fn dispatch_msg<Msg>(&mut self, msg: &Msg) {
-        <ThreadContext<Self> as IncomingMsgFilter<Msg>>::filter(&mut self.component, &mut self.context, msg);
     }
 
     fn spawn<'scope, 'env: 'scope>(
         self,
         scope: &'scope thread::Scope<'scope, 'env>,
     ) -> thread::ScopedJoinHandle<'scope, ()> {
-        let mut thread_impl = self;
+        let thread_impl = self;
         scope.spawn(move || {
-            thread_impl.start_loop();
+            thread_impl.start_event_loop();
         })
     }
 }
 
-type ThreadHandle<T> = Sender<Envelope<T>>;
+type ThreadHandle<T> = Sender<Envelope<Pipeline<T>>>;
 
 pub trait Senders {
-    fn send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
+    fn send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>);
 
-    fn try_send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
+    fn try_send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>);
 }
 
 impl Senders for () {
-    fn send<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
+    fn send<Msg>(&self, _msg: impl ThreadLocalEnvelope<Msg>) {}
 
-    fn try_send<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
+    fn try_send<Msg>(&self, _msg: impl ThreadLocalEnvelope<Msg>) {}
 }
 
 macro_rules! peel_impl_context_for_handles {
@@ -146,14 +204,14 @@ macro_rules! impl_context_for_handles {
     ($($ts:ident,)+) => {
         impl<$($ts: ThreadInfo,)+> Senders for ($(ThreadHandle<$ts>,)+) {
             #[allow(non_snake_case)]
-            fn send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+            fn send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) {
                 let msg = msg.alloc_envelope();
                 let ($($ts,)+) = self;
                 $({$ts.send(msg.build_envelope()).unwrap()})+
             }
 
             #[allow(non_snake_case)]
-            fn try_send<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
+            fn try_send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) {
                 let msg = msg.alloc_envelope();
                 let ($($ts,)+) = self;
                 let _ = ($($ts.send(msg.build_envelope()),)+);
@@ -180,8 +238,8 @@ macro_rules! impl_hub_type {
 macro_rules! impl_hubs {
     (($($ts:ident,)*), ()) => {};
     (($($ts:ident,)*), ($u:ident, $($us:ident,)*)) => {
-        impl<$($ts: Send + 'static,)* $($us: Send + 'static,)*> Hub for (($($ts,)*), ($($us,)*)) {
-            type Handles<$u: Send + 'static> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
+        impl<$($ts: Container + Send + 'static,)* $($us: Container + Send + 'static,)*> Hub for (($($ts,)*), ($($us,)*)) {
+            type Handles<$u: Container + Send + 'static> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
         }
         impl_hubs!{($($ts,)* $u,), ($($us,)*)}
     };
@@ -215,7 +273,7 @@ macro_rules! peel_impl_thread_builder {
 macro_rules! impl_thread_builder {
     ((), ()) => {};
     (($($ts:ident,)+), ($($channels:ident,)+)) => {
-        impl<$($ts: Send + 'static,)+> ThreadBuilder for ($($ts,)+) {
+        impl<$($ts: Container + Send + 'static,)+> ThreadBuilder for ($($ts,)+) {
             type Threads = thread_builder_threads_type!((), ($($ts,)+), ());
 
             #[allow(non_snake_case)]
@@ -227,12 +285,9 @@ macro_rules! impl_thread_builder {
                 let ($($channels,)+) = channels;
                 thread::scope(|s| {
                     let handles = vec![$(Thread {
-                        component: $ts,
+                        container: $ts,
                         receiver: $channels.0,
-                        context: ThreadContext {
-                            senders: $channels.1,
-                            stop_requested: false,
-                        }
+                        senders: $channels.1,
                     }.spawn(s),)+];
                     handles.into_iter().map(|h| h.join()).collect()
                 })
