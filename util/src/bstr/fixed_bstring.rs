@@ -18,6 +18,7 @@ impl<const N: usize, const E: u8> FixedString<N, E> {
 
     /// This function is O(N).
     fn to_slice(&self) -> &[u8] {
+        #![allow(clippy::wrong_self_convention)]
         let end = self.0.iter().position(|&b| b == E).unwrap_or(N);
         &self.0[..end]
     }

@@ -15,10 +15,10 @@ where
 
 impl<Traits: MdTraits> std::ops::Drop for Book<Traits> {
     fn drop(&mut self) {
-        for (_, level) in &self.bids {
+        for level in self.bids.values() {
             assert!(level.quantity > Default::default());
         }
-        for (_, level) in &self.asks {
+        for level in self.asks.values() {
             assert!(level.quantity > Default::default());
         }
     }
@@ -157,7 +157,7 @@ where
     Handler: L1Handler<Traits>,
 {
     fn drop(&mut self) {
-        for (_, order) in &self.orders {
+        for order in self.orders.values() {
             assert!(order.quantity > Default::default());
         }
     }

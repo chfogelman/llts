@@ -63,6 +63,7 @@ impl<'a, Msg: Copy + Send + 'static> CopyEnvelope<'a, Msg> {
         impl<T> Check<T> {
             const VALID: () = assert!(std::mem::size_of::<T>() <= BUF_SIZE);
         }
+        #[allow(clippy::let_unit_value)]
         let _ = Check::<Msg>::VALID;
 
         Self(msg)
@@ -171,7 +172,7 @@ impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<'_, M
     }
 
     fn get(&self) -> &Msg {
-        &self.0
+        self.0
     }
 }
 
@@ -182,7 +183,7 @@ impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for ArcEnvelope<'_, Ms
     }
 
     fn get(&self) -> &Msg {
-        &self.0
+        self.0
     }
 }
 
@@ -192,7 +193,7 @@ impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<'_, M
     }
 
     fn get(&self) -> &Msg {
-        &self.0
+        self.0
     }
 }
 
