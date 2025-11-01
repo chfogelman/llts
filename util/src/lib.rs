@@ -1,3 +1,4 @@
+pub mod align;
 pub mod arith;
 pub mod bstr;
 pub mod fixed_point;
