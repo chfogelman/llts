@@ -1,2 +1,2 @@
 [build]
-rustflags = ["-Z", "threads=6"]
+rustflags = ["-Z", "incremental-verify-ich"]

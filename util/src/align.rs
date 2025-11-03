@@ -30,3 +30,33 @@ impl<T: Display> Display for CacheLineAligned<T> {
         self.0.fmt(f)
     }
 }
+
+#[repr(align(128))]
+#[derive(Clone, Copy, Default)]
+pub struct DoubleCacheLineAligned<T>(pub T);
+
+impl<T> Deref for DoubleCacheLineAligned<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for DoubleCacheLineAligned<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Debug> Debug for DoubleCacheLineAligned<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: Display> Display for DoubleCacheLineAligned<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}

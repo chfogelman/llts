@@ -110,9 +110,3 @@ where
         self.0.div_assign(rhs.0)
     }
 }
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-}
