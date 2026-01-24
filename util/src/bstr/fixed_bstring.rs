@@ -1,3 +1,9 @@
+//! A fixed-length string type.
+//!
+//! This type serves as a fundamental stack-allocated string type.
+
+use std::fmt::Write;
+
 use zerocopy::*;
 
 #[repr(transparent)]
@@ -37,12 +43,28 @@ impl<const N: usize> Default for FixedString<N> {
 #[derive(Clone, Copy, Debug)]
 pub struct LengthError;
 
+/// Allows conversion from byte array literals, e.g. `b"Hello world".into()`
+impl<const N: usize, const E: u8, const M: usize> std::convert::From<&[u8; M]> for FixedString<N, E> {
+    fn from(value: &[u8; M]) -> Self {
+        struct Check<const N: usize, const M: usize>;
+        impl<const N: usize, const M: usize> Check<N, M> {
+            const VALID: () = assert!(M <= N);
+        }
+        let _ = Check::<N, M>::VALID;
+        let mut out = Self::new();
+        for (i, c) in value.iter().take_while(|&&b| b != E).enumerate() {
+            out.0[i] = *c;
+        }
+        out
+    }
+}
+
 impl<const N: usize, const E: u8> std::convert::TryFrom<&str> for FixedString<N, E> {
     type Error = LengthError;
 
-    fn try_from(inp: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         let mut out = Self::new();
-        for (i, c) in inp.bytes().take_while(|&b| b != E).enumerate() {
+        for (i, c) in value.bytes().take_while(|&b| b != E).enumerate() {
             if i < N {
                 out.0[i] = c;
             } else {
@@ -55,17 +77,24 @@ impl<const N: usize, const E: u8> std::convert::TryFrom<&str> for FixedString<N,
 
 impl<const N: usize, const E: u8> std::hash::Hash for FixedString<N, E> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(self.to_slice());
+        // NOTE: this must remain the precise implementation because it matches that of [u8].
+        // If not, the implementation of `Borrow` below is incorrect.
+        let slc = self.to_slice();
+        state.write_usize(slc.len());
+        state.write(slc);
+    }
+}
 
-        // Hashing the terminating byte value makes this hash prefix-free
-        state.write_u8(E)
+impl<const N: usize, const E: u8> std::borrow::Borrow<[u8]> for FixedString<N, E> {
+    fn borrow(&self) -> &[u8] {
+        self.to_slice()
     }
 }
 
 impl<const N: usize, const E: u8> std::fmt::Display for FixedString<N, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for b in self.bytes() {
-            write!(f, "{}", b as char)?;
+            f.write_char(b as char)?;
         }
         Ok(())
     }
@@ -75,10 +104,9 @@ impl<const N: usize, const E: u8> std::fmt::Debug for FixedString<N, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\"")?;
         for b in self.0 {
-            write!(f, "{}", b as char)?;
+            f.write_char(b as char)?;
         }
-        write!(f, "\"")?;
-        Ok(())
+        write!(f, "\"fs<{N}>")
     }
 }
 
@@ -120,44 +148,4 @@ impl<const N: usize, const E: u8> core::cmp::Ord for FixedString<N, E> {
 }
 
 #[cfg(test)]
-mod test {
-    use super::*;
-
-    type FS = FixedString<40>;
-
-    #[test]
-    fn test() {
-        let hello = FixedString::<40>::try_from("Hello world").unwrap();
-        assert_eq!(hello, "Hello world");
-        assert_eq!(FixedString::<11, 0>(*b"Hello\0world"), FixedString(*b"Hello"));
-    }
-
-    #[test]
-    fn test_truncated() {
-        assert_eq!(FixedString::<5>::from_truncated("Hel"), "Hel");
-        assert_eq!(FixedString::<5>::from_truncated("Hello"), "Hello");
-        assert_eq!(FixedString::<5>::from_truncated("Hel\0o"), "Hel");
-        assert_eq!(FixedString::<5>::from_truncated("Hello world"), "Hello");
-    }
-
-    #[test]
-    fn test_fmt() {
-        assert_eq!(format!("{}", FS::try_from("Hello world").unwrap()), "Hello world");
-    }
-
-    #[test]
-    fn test_cmp() {
-        assert_eq!(FS::from_truncated("Hello world"), FS::from_truncated("Hello world\0xyz"));
-        assert_eq!(FS::try_from("Hello world").unwrap(), "Hello world\0xyz");
-        assert_ne!(FS::try_from("Hello world").unwrap(), FS::from_truncated("Hello world!"));
-        assert_ne!(FS::try_from("Hello world").unwrap(), "Hello world!");
-        assert!(FS::try_from("Hello worlc").unwrap() < "Hello world\0xyz");
-        assert!(FS::try_from("Hello worl\0z").unwrap() < "Hello world\0xyz");
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_len_err() {
-        let _hello = FixedString::<10>::try_from("Hello world").unwrap();
-    }
-}
+mod test;

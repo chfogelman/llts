@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
 
 use util::queue::broadcast;
@@ -20,41 +21,53 @@ const NUM_ITERS: i64 = if cfg!(miri) {
     10_000
 };
 
+const SIZE: usize = if cfg!(miri) { 1 << 5 } else { 1 << 16 };
+
 #[test]
 fn test() {
-    let (tx, rx) = broadcast::channel(1 << 16);
-    let mut rng = SimpleLcg(0);
-    for _ in 0..4 {
-        let rx = rx.clone();
-        std::thread::spawn(move || {
-            let mut count = 0_i64;
-            let mut lagged = false;
-            while count < NUM_ITERS {
-                match rx.recv() {
-                    Ok(val) => {
-                        if lagged {
-                            rng = SimpleLcg(val);
-                            lagged = false;
-                        } else if val != rng.next() {
-                            eprintln!("Failed");
-                            std::process::exit(-1);
+    let (tx, rx) = broadcast::channel(SIZE);
+    let done_count = &AtomicU8::new(0);
+    thread::scope(|s| {
+        let mut rng = SimpleLcg(0);
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let rx = rx.clone();
+                s.spawn(move || {
+                    let mut count = 0_i64;
+                    let mut lagged = false;
+                    while count < NUM_ITERS {
+                        match rx.recv() {
+                            Ok(val) => {
+                                if lagged {
+                                    rng = SimpleLcg(val);
+                                    lagged = false;
+                                } else if val != rng.next() {
+                                    panic!("Mismatch at {}", val);
+                                }
+                                count += 1;
+                            },
+                            Err(_) => {
+                                println!("Lagged! {}", count);
+                                lagged = true;
+                            },
                         }
-                        count += 1;
-                    },
-                    Err(_) => {
-                        println!("Lagged! {}", count);
-                        lagged = true;
-                    },
-                }
+                    }
+                    done_count.fetch_add(1, Ordering::Relaxed);
+                    println!("Done!");
+                })
+            })
+            .collect();
+
+        s.spawn(move || {
+            while done_count.load(Ordering::Relaxed) < 4 {
+                tx.send(rng.next());
             }
-            std::process::exit(0);
-        });
-    }
-    thread::spawn(move || {
-        loop {
-            tx.send(rng.next());
+        })
+        .join()
+        .unwrap();
+
+        for thread in threads {
+            thread.join().unwrap();
         }
-    })
-    .join()
-    .unwrap();
+    });
 }

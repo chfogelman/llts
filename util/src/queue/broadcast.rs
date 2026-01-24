@@ -86,7 +86,7 @@ impl<T: Copy> Sender<T> {
         let position = self.queue.block_counter.load(Ordering::Relaxed);
 
         // SAFETY: We asserted in `channel` that the queue's capacity is greater than 1
-        unsafe { std::hint::assert_unchecked(self.queue.items.len() > 0) }
+        unsafe { std::hint::assert_unchecked(!self.queue.items.is_empty()) }
 
         let block = &self.queue.items[position as usize & (self.queue.items.len() - 1)];
         block.seqno.store(position * 2 + 1, Ordering::Relaxed);
@@ -94,7 +94,7 @@ impl<T: Copy> Sender<T> {
         // Ensure the value write is not reordered before the store to seqno.
         atomic::fence(Ordering::Release);
         #[cfg(miri)]
-        block.val.lock().unwrap().write(val);
+        block.val.lock().expect("wtf how lol").write(val);
 
         // SAFETY: technically, none. write_volatile is not atomic. However, seqlock semantics
         // ensure that the reader never treats torn reads as valid.
@@ -141,8 +141,7 @@ impl<T: Copy> Receiver<T> {
     /// the value most recently sent by the producer.
     ///
     /// If the queue is empty, [`TryRecvError::Empty`] will be returned. If spinning on this return
-    /// value, it is recommended to use [`Receiver::recv`] instead, or employ
-    /// [`std::hint::spin_loop()`].
+    /// value, it is recommended to use [`Receiver::recv`] instead, or employ [`std::hint::spin_loop()`].
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         Self::recv_impl::<TryRecvError, false>(self, || TryRecvError::Empty, || TryRecvError::Lagged)
     }
@@ -156,7 +155,7 @@ impl<T: Copy> Receiver<T> {
     ) -> Result<T, Error> {
         let block_count = self.block_count.get();
         // SAFETY: We asserted in `channel` that the queue's capacity is greater than 1
-        unsafe { std::hint::assert_unchecked(self.queue.items.len() > 0) }
+        unsafe { std::hint::assert_unchecked(!self.queue.items.is_empty()) }
 
         let block = &self.queue.items[block_count as usize & (self.queue.items.len() - 1)];
         let our_seqno = block_count * 2 + 2;
@@ -164,10 +163,8 @@ impl<T: Copy> Receiver<T> {
             while our_seqno > block.seqno.load(Ordering::Relaxed) {
                 std::hint::spin_loop();
             }
-        } else {
-            if our_seqno > block.seqno.load(Ordering::Relaxed) {
-                return Err(make_empty_err());
-            }
+        } else if our_seqno > block.seqno.load(Ordering::Relaxed) {
+            return Err(make_empty_err());
         }
 
         loop {
@@ -176,7 +173,7 @@ impl<T: Copy> Receiver<T> {
                 continue;
             }
             #[cfg(miri)]
-            let maybe_val = block.val.lock().unwrap();
+            let maybe_val = block.val.lock().expect("wtf how actually");
 
             // SAFETY: Technically, none. read_volatile is not atomic. However, seqlock semantics
             // ensure that we will not call .assume_init() on torn values.
