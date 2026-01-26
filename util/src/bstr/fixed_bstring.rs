@@ -22,7 +22,9 @@ impl<const N: usize, const E: u8> FixedString<N, E> {
         Self::try_from(s).expect("This string should have already been truncated!")
     }
 
-    /// This function is O(N).
+    /// Returns the bytes of this string as a slice.
+    ///
+    /// Because it must find the terminating character, it is O(N) and gets a to_ naming convention
     fn to_slice(&self) -> &[u8] {
         #![allow(clippy::wrong_self_convention)]
         let end = self.0.iter().position(|&b| b == E).unwrap_or(N);

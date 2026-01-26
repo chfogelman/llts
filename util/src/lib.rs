@@ -5,6 +5,7 @@ pub mod fixed_point;
 pub mod hint;
 pub mod logger;
 pub mod queue;
+pub mod telemetry;
 
 pub use bstr::FixedString;
 pub use fixed_point::*;
