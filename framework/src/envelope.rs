@@ -80,7 +80,7 @@ struct ArcEnvelopeBuilder<Msg>(Arc<Msg>);
 #[repr(transparent)]
 struct CopyEnvelopeBuilder<Msg>(Msg);
 
-pub(crate) trait EnvelopeBuilder<Msg> {
+pub trait EnvelopeBuilder<Msg> {
     fn build_envelope<Dst: Context>(&self) -> Envelope<Dst>;
 }
 
