@@ -21,16 +21,16 @@ const NUM_ITERS: i64 = if cfg!(miri) {
     10_000
 };
 
-const SIZE: usize = if cfg!(miri) { 1 << 5 } else { 1 << 16 };
+const SIZE: usize = if cfg!(miri) { 1 << 5 } else { 1 << 20 };
 
 #[test]
 fn test() {
-    let (tx, rx) = broadcast::channel(SIZE);
+    let (tx, rx) = broadcast::channel(SIZE).expect("valid capacity");
     let done_count = &AtomicU8::new(0);
     thread::scope(|s| {
         let mut rng = SimpleLcg(0);
         let threads: Vec<_> = (0..4)
-            .map(|_| {
+            .map(|tid| {
                 let rx = rx.clone();
                 s.spawn(move || {
                     let mut count = 0_i64;
@@ -47,7 +47,7 @@ fn test() {
                                 count += 1;
                             },
                             Err(_) => {
-                                println!("Lagged! {}", count);
+                                println!("Thread {tid} lagged at {count}");
                                 lagged = true;
                             },
                         }

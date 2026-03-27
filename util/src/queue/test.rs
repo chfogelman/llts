@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_send() {
-    let (tx, rx) = broadcast::channel(2);
+    let (tx, rx) = broadcast::channel(2).expect("valid capacity");
     tx.send(420);
     tx.send(69);
 
@@ -16,13 +16,13 @@ fn test_send() {
 
 #[test]
 fn test_lag() {
-    let (tx, rx) = broadcast::channel(2);
+    let (tx, rx) = broadcast::channel(2).expect("valid capacity");
 
     tx.send(1);
     tx.send(2);
     tx.send(3);
 
-    assert_eq!(rx.recv(), Err(broadcast::RecvError::Lagged));
+    assert_eq!(rx.recv(), Err(broadcast::Lagged));
 
     tx.send(4);
     assert_eq!(rx.recv().unwrap(), 4);
@@ -30,29 +30,27 @@ fn test_lag() {
 
 #[test]
 fn test_try_recv() {
-    let (tx, rx) = broadcast::channel(2);
+    let (tx, rx) = broadcast::channel(2).expect("valid capacity");
 
     tx.send(1);
 
-    assert_eq!(rx.try_recv().unwrap(), 1);
-    assert_eq!(rx.try_recv(), Err(broadcast::TryRecvError::Empty));
+    assert_eq!(rx.try_recv().unwrap().unwrap(), 1);
+    assert_eq!(rx.try_recv(), None);
 
     tx.send(2);
     tx.send(3);
     tx.send(4);
 
-    assert_eq!(rx.try_recv(), Err(broadcast::TryRecvError::Lagged));
-    assert_eq!(rx.try_recv(), Err(broadcast::TryRecvError::Empty));
+    assert_eq!(rx.try_recv(), Some(Err(broadcast::Lagged)));
+    assert_eq!(rx.try_recv(), None);
 }
 
 #[test]
-#[should_panic]
 fn test_small_capacity() {
-    let _ = broadcast::channel::<i32>(1);
+    assert!(broadcast::channel::<i32>(1).is_err());
 }
 
 #[test]
-#[should_panic]
 fn test_bad_capacity() {
-    let _ = broadcast::channel::<i32>(5);
+    assert!(broadcast::channel::<i32>(5).is_err());
 }

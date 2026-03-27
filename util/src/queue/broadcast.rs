@@ -1,6 +1,16 @@
+//! A single-producer, multi-consumer broadcast queue.
+//!
+//! All consumers will receive the same set of messages, which must implement [`Copy`] for this
+//! queue to be of any use. If a consumer lags so far behind the producer that it starts dropping
+//! messages, this will be indicated via [`Lagged`], and the [`Receiver`] handle will
+//! set itself up to receive the most recently written message. This _does_ result in lost messages,
+//! so this queue must be combined with proper recovery mechanisms.
+
 use std::cell::Cell;
 #[cfg(not(miri))]
 use std::cell::UnsafeCell;
+use std::error::Error;
+use std::fmt::Display;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -8,22 +18,33 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{self, AtomicU64, Ordering};
 
-use crate::align::CacheLineAligned;
-
-/// Errors that can be returned by [`Receiver::recv`].
+/// Error that indicates invalid capacity passed to [`channel`]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecvError {
-    /// Indicates that this [`Receiver`] has lagged behind the [`Sender`].
-    Lagged,
+pub struct CapacityError(usize);
+
+impl Display for CapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Invalid capacity {} to broadcast::channel; must be power of two and greater than 1",
+            self.0
+        )
+    }
 }
 
+impl Error for CapacityError {}
+
+/// Indicates that this [`Receiver`] has lagged behind the [`Sender`]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TryRecvError {
-    /// Indicates that this [`Receiver`] has lagged behind the [`Sender`].
-    Lagged,
-    /// Indicates that the queue is empty.
-    Empty,
+pub struct Lagged;
+
+impl Display for Lagged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("broadcast queue Receiver lagged")
+    }
 }
+
+impl Error for Lagged {}
 
 #[repr(align(64))]
 struct Block<T> {
@@ -49,13 +70,56 @@ impl<T> Default for Block<T> {
     }
 }
 
-struct QueueImpl<T> {
+struct QueueBuf<T> {
+    storage: Arc<[Block<T>]>,
+}
+
+impl<T> Clone for QueueBuf<T> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+        }
+    }
+}
+
+impl<T> QueueBuf<T> {
+    fn new(capacity: usize) -> Self {
+        assert!(capacity > 1, "Broadcast queue capacity must be greater than 1");
+        assert!(capacity.count_ones() == 1, "Broadcast queue capacity must be a power of 2");
+
+        // HACK: We must allocate an additional block at the end,
+        // whose `seqno` is abused to provide the block count
+        let mut storage = Arc::new_uninit_slice(capacity + 1);
+        for val in Arc::get_mut(&mut storage).expect("Cannot have been cloned") {
+            val.write(Block::default());
+        }
+        let storage = unsafe { storage.assume_init() };
+        QueueBuf { storage }
+    }
+
+    fn len(&self) -> usize {
+        self.storage.len() - 1
+    }
+
+    fn get(&self, position: usize) -> &Block<T> {
+        debug_assert!((position & (self.len() - 1)) < self.len());
+        unsafe {
+            // SAFETY: We have asserted on construction that the buffer was not constructed with
+            // capacity 0.
+            &self.storage.get_unchecked(position & (self.len() - 1))
+        }
+    }
+
     /// This is how many blocks the writer has written. Some invariants:
-    /// block_counter % items.len() is the next position the writer will write to.
-    /// block_counter * 2 is the sequence number of the previously written block, if any
+    /// write_count() % len() is the next position the writer will write to.
+    /// write_count() * 2 is the sequence number of the previously written block, if any
     /// A receiver can use these properties to catch up with the sender if it falls behind.
-    block_counter: CacheLineAligned<AtomicU64>,
-    items:         Box<[Block<T>]>,
+    fn write_count(&self) -> &AtomicU64 {
+        // HACK: an extra block in the storage array is (ab)used to hold the block count.
+        // This allows us to store the block count contiguously with the queue items, but
+        // uses more memory than strictly necessary.
+        &self.storage[self.storage.len() - 1].seqno
+    }
 }
 
 /// The sending side of a [`channel`].
@@ -63,7 +127,7 @@ struct QueueImpl<T> {
 /// `Sender`s cannot be cloned and do not implement [`Sync`]. However, they can be sent between
 /// threads safely. One sender broadcasts messages to all the receivers for this queue.
 pub struct Sender<T> {
-    queue: Arc<QueueImpl<T>>,
+    queue: QueueBuf<T>,
 
     // Important not only that there is only one sender, but also that it is not accidentally
     // shared between threads. `usize` is Send but not Sync, so it's appropriate to prevent
@@ -72,7 +136,7 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
-    fn new(queue: Arc<QueueImpl<T>>) -> Self {
+    fn new(queue: QueueBuf<T>) -> Self {
         Self {
             queue,
             _unsync: PhantomData,
@@ -83,12 +147,9 @@ impl<T> Sender<T> {
 impl<T: Copy> Sender<T> {
     /// Inserts `val` at the current head of the queue. This may cause a consumer to lag
     pub fn send(&self, val: T) {
-        let position = self.queue.block_counter.load(Ordering::Relaxed);
+        let position = self.queue.write_count().load(Ordering::Relaxed);
 
-        // SAFETY: We asserted in `channel` that the queue's capacity is greater than 1
-        unsafe { std::hint::assert_unchecked(!self.queue.items.is_empty()) }
-
-        let block = &self.queue.items[position as usize & (self.queue.items.len() - 1)];
+        let block = &self.queue.get(position as usize);
         block.seqno.store(position * 2 + 1, Ordering::Relaxed);
 
         // Ensure the value write is not reordered before the store to seqno.
@@ -103,7 +164,7 @@ impl<T: Copy> Sender<T> {
             std::ptr::write_volatile(block.val.get() as *mut _, MaybeUninit::new(val));
         }
         block.seqno.store(position * 2 + 2, Ordering::Release);
-        self.queue.block_counter.store(position + 1, Ordering::Relaxed);
+        self.queue.write_count().store(position + 1, Ordering::Relaxed);
     }
 }
 
@@ -114,57 +175,60 @@ impl<T: Copy> Sender<T> {
 /// the clone will not be able to receive those same values.
 #[derive(Clone)]
 pub struct Receiver<T> {
-    queue:       Arc<QueueImpl<T>>,
-    block_count: Cell<u64>,
+    queue:      QueueBuf<T>,
+    // `read_count` is intentionally a Cell type and _not_ an atomic type.
+    // A [`Receiver`] cannot be shared between threads. It must be cloned.
+    read_count: Cell<u64>,
 }
 
 impl<T> Receiver<T> {
-    fn new(queue: Arc<QueueImpl<T>>) -> Self {
+    fn new(queue: QueueBuf<T>) -> Self {
         Self {
             queue,
-            block_count: Cell::new(0),
+            read_count: Cell::new(0),
         }
     }
 }
 
 impl<T: Copy> Receiver<T> {
     /// Receives the next item in the queue. This function will block the thread in a spin-loop
-    /// until the next item is available. This will return [`RecvError::Lagged`] if the producer
+    /// until the next item is available. This will return [`Lagged`] if the producer
     /// has gotten ahead of this Receiver. The next value received after lagging will be the value
     /// most recently sent by the producer.
-    pub fn recv(&self) -> Result<T, RecvError> {
-        Self::recv_impl::<RecvError, true>(self, || unreachable!(), || RecvError::Lagged)
+    pub fn recv(&self) -> Result<T, Lagged> {
+        unsafe {
+            // SAFETY: Passing `true` ensures this function blocks until there is a value available
+            self.recv_impl::<true>().unwrap_unchecked()
+        }
     }
 
-    /// Receives the next item in the queue, if any. This will return [`TryRecvError::Lagged`] if the
-    /// producer has gotten ahead of this Receiver. The next value received after lagging will be
-    /// the value most recently sent by the producer.
+    /// Receives the next item in the queue, if any, or [`Lagged`] if the producer has gotten
+    /// ahead of this Receiver. The next value received after lagging will be the value most
+    /// recently sent by the producer.
     ///
-    /// If the queue is empty, [`TryRecvError::Empty`] will be returned. If spinning on this return
+    /// If the queue is empty, [`None`] will be returned. If spinning on this return
     /// value, it is recommended to use [`Receiver::recv`] instead, or employ [`std::hint::spin_loop()`].
-    pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        Self::recv_impl::<TryRecvError, false>(self, || TryRecvError::Empty, || TryRecvError::Lagged)
+    pub fn try_recv(&self) -> Option<Result<T, Lagged>> {
+        self.recv_impl::<false>()
     }
 
     // Helper for implementing `recv` and `try_recv`
     #[inline]
-    fn recv_impl<Error, const BLOCKING: bool>(
+    fn recv_impl<const BLOCKING: bool>(
         &self,
-        make_empty_err: impl Fn() -> Error,
-        make_lagged_err: impl Fn() -> Error,
-    ) -> Result<T, Error> {
-        let block_count = self.block_count.get();
-        // SAFETY: We asserted in `channel` that the queue's capacity is greater than 1
-        unsafe { std::hint::assert_unchecked(!self.queue.items.is_empty()) }
+    ) -> Option<Result<T, Lagged>> {
+        let read_count = self.read_count.get();
 
-        let block = &self.queue.items[block_count as usize & (self.queue.items.len() - 1)];
-        let our_seqno = block_count * 2 + 2;
+        let block = &self.queue.get(read_count as usize);
+        let our_seqno = read_count * 2 + 2;
         if const { BLOCKING } {
             while our_seqno > block.seqno.load(Ordering::Relaxed) {
                 std::hint::spin_loop();
             }
-        } else if our_seqno > block.seqno.load(Ordering::Relaxed) {
-            return Err(make_empty_err());
+        } else {
+            if our_seqno > block.seqno.load(Ordering::Relaxed) {
+                return None;
+            }
         }
 
         loop {
@@ -181,16 +245,17 @@ impl<T: Copy> Receiver<T> {
             let maybe_val = unsafe { std::ptr::read_volatile(block.val.get()) };
             atomic::fence(Ordering::Acquire);
 
-            let seqno2 = block.seqno.load(Ordering::Acquire);
+            let seqno2 = block.seqno.load(Ordering::Relaxed);
             if seqno1 == seqno2 {
                 if seqno1 == our_seqno {
-                    self.block_count.set(block_count + 1);
+                    self.read_count.set(read_count + 1);
                     // SAFETY: At this point, we can be sure that we have read a value that was
                     // indeed previously written, and that it is not torn.
-                    return unsafe { Ok(maybe_val.assume_init()) };
+                    return unsafe { Some(Ok(maybe_val.assume_init())) };
                 } else {
-                    self.block_count.set(self.queue.block_counter.load(Ordering::Relaxed));
-                    return Err(make_lagged_err());
+                    // Catch up with the producer
+                    self.read_count.set(self.queue.write_count().load(Ordering::Relaxed));
+                    return Some(Err(Lagged));
                 }
             }
         }
@@ -202,17 +267,18 @@ impl<T: Copy> Receiver<T> {
 /// All consumers will receive the same sequence of messages, as long as they do not lag behind the
 /// producer. The [`Sender`] cannot be cloned, but the [`Receiver`] may be cloned. Sending will
 /// never result in an error, and receivers can detect when they have lagged behind the sender. See
-/// [`RecvError`] and [`TryRecvError`] for details.
+/// [`Lagged`].
 ///
 /// The capacity of the queue is fixed at construction and cannot be changed. It must be a power of
 /// two and greater than 1.
 ///
-/// #Examples
+/// # Examples
 ///
 /// ```
 /// use util::queue::broadcast;
 ///
-/// let (tx, rx1) = broadcast::channel(1 << 3);
+/// let (tx, rx1) = broadcast::channel(1 << 3)
+///     .expect("Capacity must be a power of two and greater than 1");
 /// let rx2 = rx1.clone();
 ///
 /// // Thread 0
@@ -225,20 +291,11 @@ impl<T: Copy> Receiver<T> {
 /// assert_eq!(rx2.recv().unwrap(), 42);
 ///
 #[must_use]
-pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
-    assert!(capacity > 1, "Broadcast queue capacity must be greater than 1");
-    assert!(capacity.count_ones() == 1, "Broadcast queue capacity must be a power of 2");
-
-    let items = {
-        let mut items = Box::new_uninit_slice(capacity);
-        items.iter_mut().for_each(|val| {
-            val.write(Default::default());
-        });
-        unsafe { items.assume_init() }
-    };
-    let queue = Arc::new(QueueImpl {
-        block_counter: CacheLineAligned(AtomicU64::new(0)),
-        items,
-    });
-    (Sender::new(queue.clone()), Receiver::new(queue))
+pub fn channel<T>(capacity: usize) -> Result<(Sender<T>, Receiver<T>), CapacityError> {
+    if capacity <= 1 || capacity.count_ones() != 1 {
+        Err(CapacityError(capacity))
+    } else {
+        let queue = QueueBuf::new(capacity);
+        Ok((Sender::new(queue.clone()), Receiver::new(queue)))
+    }
 }
