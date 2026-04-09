@@ -57,6 +57,7 @@ fn test_percentiles_basic() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn test_percentiles_mul() {
     let mut histogram = Log2Histogram::<2048, 10_000_000>::new();
     for x in 0..1_000_000 {
