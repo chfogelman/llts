@@ -8,8 +8,8 @@ use std::ptr::NonNull;
 ///
 /// This is useful when you need a queue that is shared between two owners on the same thread, and
 /// you can't (or don't want to) use [`std::cell::RefCell`]. The tradeoff here is that this
-/// container does not implement [`Sync`], and you cannot safely obtain references to the elements
-/// in the queue. The operations are generally limited to variations of pushing and popping only.
+/// container does not implement [`Sync`], and you cannot safely obtain references to the individual
+/// elements in the queue. The operations are generally limited to variations of pushing and popping only.
 pub struct UnmutQueue<T> {
     buf:  Cell<Option<NonNull<UnsafeCell<MaybeUninit<T>>>>>,
     cap:  Cell<usize>,
@@ -31,6 +31,11 @@ impl<T> UnmutQueue<T> {
         let (buf, cap) = if capacity == 0 {
             (None, 0)
         } else {
+            let capacity = if capacity.count_ones() == 1 {
+                capacity
+            } else {
+                1 << (capacity.ilog2() + 1)
+            };
             let mem = unsafe {
                 // SAFETY: a [MaybeUninit<UnsafeCell<MaybeUninit<T>>>] is as initialized as it
                 // needs to be.
@@ -48,6 +53,11 @@ impl<T> UnmutQueue<T> {
 
     pub fn capacity(&self) -> usize {
         self.cap.get()
+    }
+
+    fn mask(&self) -> usize {
+        debug_assert_eq!(self.cap.get().count_ones(), 1);
+        self.capacity() - 1
     }
 
     pub fn len(&self) -> usize {
@@ -88,7 +98,7 @@ impl<T> UnmutQueue<T> {
                 self.get_raw(offset).read().assume_init()
             };
             self.len.set(self.len.get() - 1);
-            self.head.set((self.head.get() + 1) % self.capacity());
+            self.head.set((self.head.get() + 1) & self.mask());
             Some(val)
         }
     }
@@ -118,7 +128,7 @@ impl<T> UnmutQueue<T> {
             while let Some(elem) = self.pop() {
                 unsafe {
                     // SAFETY: we have just constructed `other` with a capacity larger than
-                    // `self`'s. 
+                    // `self`'s.
                     other.push_unchecked(elem)
                 }
             }
@@ -127,13 +137,13 @@ impl<T> UnmutQueue<T> {
     }
 
     /// Push an element to the queue without checking the queue's current capacity.
-    /// 
+    ///
     /// Precondition: the queue must have an allocated buffer whose capacity is smaller than the
     /// current number of stored elements.
     unsafe fn push_unchecked(&self, elem: T) {
         debug_assert!(self.len() < self.capacity());
         debug_assert!(self.buf.get().is_some());
-        let offset = (self.head.get() + self.len()) % self.capacity();
+        let offset = (self.head.get() + self.len()) & self.mask();
         unsafe {
             self.get_raw(offset).write(MaybeUninit::new(elem));
         }
@@ -154,7 +164,7 @@ impl<T: Clone> Clone for UnmutQueue<T> {
     fn clone(&self) -> Self {
         let new_q = Self::with_capacity(self.len());
         for i in self.head.get()..(self.head.get() + self.len()) {
-            let offset = i % self.capacity();
+            let offset = i & self.mask();
             unsafe {
                 let cloned = self.get_raw(offset).as_ref_unchecked().assume_init_ref().clone();
                 new_q.push_unchecked(cloned);
@@ -168,7 +178,7 @@ impl<T> Drop for UnmutQueue<T> {
     fn drop(&mut self) {
         if let Some(buf) = self.buf.get() {
             for i in self.head.get()..(self.head.get() + self.len()) {
-                let offset = i % self.capacity();
+                let offset = i & self.mask();
                 unsafe {
                     // SAFETY: because this element is between `head` and `head + len`, we are
                     // guaranteed that it is initialized and now needs to be dropped.

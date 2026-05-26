@@ -7,9 +7,9 @@ use super::UnmutQueue;
 #[test]
 fn push_n_pop_1() {
     let q = UnmutQueue::with_capacity(1);
-    q.push(vec![1, 2, 3]);
+    q.push(Box::new([1, 2, 3]) as Box<[i32]>);
     let val = q.pop();
-    assert_eq!(val, Some(vec![1, 2, 3]));
+    assert_eq!(*val.unwrap(), vec![1, 2, 3]);
     assert_eq!(q.len(), 0);
 }
 
@@ -96,40 +96,40 @@ fn push_pop_interleaved() {
 #[test]
 fn into_iterator() {
     let q = UnmutQueue::with_capacity(5);
-    q.push(1);
-    q.push(2);
-    q.push(3);
-    q.push(4);
-    q.push(5);
+    q.push(Box::new(1));
+    q.push(Box::new(2));
+    q.push(Box::new(3));
+    q.push(Box::new(4));
+    q.push(Box::new(5));
 
     let mut i = 1;
     for x in q {
-        assert_eq!(i, x);
+        assert_eq!(i, *x);
         i += 1;
     }
 }
 
 #[test]
 fn from_iterator() {
-    let q = UnmutQueue::from_iter([1, 2, 3, 4, 5, 6, 7]);
+    let q = UnmutQueue::from_iter((1..=5).map(|x| Box::new(x)));
     let mut i = 1;
     while let Some(x) = q.pop() {
-        assert_eq!(i, x);
+        assert_eq!(i, *x);
         i += 1;
     }
 }
 
 #[test]
 fn drain() {
-    let q = UnmutQueue::from_iter(1..=5);
+    let q = UnmutQueue::from_iter((1..=5).map(|x| Box::new(x)));
     let mut i = 1;
     for x in q.drain() {
-        assert_eq!(i, x);
+        assert_eq!(i, *x);
         i += 1;
     }
     assert_eq!(q.len(), 0);
-    assert_eq!(q.capacity(), 5);
-    q.push(1); //Shouldn't panic
+    assert!(q.capacity() >= 5);
+    q.push(Box::new(1)); //Shouldn't panic
 }
 
 #[test]
