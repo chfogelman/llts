@@ -17,7 +17,9 @@ impl Bin {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Log2Histogram<const BINS: usize, const MAX_VALUE: u64> {
-    total: u64,
+    count: u64,
+    sum: u64,
+    sum_sq: f64,
     bins:  [Bin; BINS],
     overflow_bin: Bin,
 }
@@ -31,7 +33,9 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
 
     pub fn new() -> Self {
         Self {
-            total: 0,
+            count: 0,
+            sum: 0,
+            sum_sq: 0.,
             bins:  [Bin::new(); BINS],
             overflow_bin: Bin::new(),
         }
@@ -46,7 +50,9 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
             bin.min = bin.min.min(val);
             bin.max = bin.max.max(val);
         };
-        self.total += 1;
+        self.count += 1;
+        self.sum += val;
+        self.sum_sq += (val * val) as f64;
         if let Some(idx) = Self::get_bin_idx(val) {
             let bin = &mut self.bins[idx];
             update_bin(bin);
@@ -82,7 +88,10 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
             // `limit` is the number of items that constitutes the percentile,
             // This bin's `min` corresponds to the current tally,
             // and `max` to tally + bin.count
-            while let limit = (pcts[pi] * self.total as f64) as u64
+            // (x_0, y_0) = (tally, min)
+            // (x_1, y_1) = (tally + bin.count, max)
+            // x = limit
+            while let limit = (pcts[pi] * self.count as f64) as u64
                 && tally <= limit && limit < tally + bin.count {
                 vals[pi] = ((tally + bin.count - limit) * bin.min + (limit - tally) * bin.max) / bin.count;
                 pi += 1;
@@ -93,6 +102,18 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
             tally += bin.count;
         }
         return vals;
+    }
+
+    pub fn mean(&self) -> f64 {
+        self.sum as f64 / self.count as f64
+    }
+
+    pub fn var(&self) -> f64 {
+        ((self.sum_sq) / self.count as f64) - self.mean() * self.mean()
+    }
+
+    pub fn std(&self) -> f64 {
+        self.var().sqrt()
     }
 
     fn get_bin_idx(val: u64) -> Option<usize> {

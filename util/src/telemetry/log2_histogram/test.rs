@@ -68,6 +68,10 @@ fn test_percentiles_mul() {
         histogram.compute_percentiles(&[0.25, 0.50, 0.75, 0.99, 0.999]),
         expected
     );
+    assert_eq!(histogram.mean(), 2749997.25);
+
+    // True val:                2295828.653957477
+    assert_eq!(histogram.std(), 2295828.6539659696);
 }
 
 #[test]
@@ -82,4 +86,6 @@ fn test_percentiles_exp() {
         histogram.compute_percentiles(&[0.25, 0.50, 0.75, 0.99, 0.999]),
         expected
     );
+    assert_eq!(histogram.mean(), 83277861.0);
+    assert_eq!(histogram.std(), 201289373.7545);
 }
