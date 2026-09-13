@@ -3,6 +3,7 @@
 pub mod container;
 pub mod envelope;
 pub mod messages;
+mod timer;
 mod thread_builder;
 
 use envelope::ThreadLocalEnvelope;
@@ -17,6 +18,11 @@ pub trait Context {
     fn dispatch<Msg>(&mut self, msg: &Msg) {}
 
     fn stop(&mut self);
+
+    // FIXME: redesign this
+    fn now(&self) -> std::time::SystemTime {
+        unimplemented!()
+    }
 }
 
 #[macro_export]

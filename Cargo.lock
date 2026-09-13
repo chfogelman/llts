@@ -37,6 +37,9 @@ dependencies = [
 [[package]]
 name = "framework"
 version = "0.0.0"
+dependencies = [
+ "util",
+]
 
 [[package]]
 name = "libmd"

@@ -59,13 +59,7 @@ const _: () = const { assert!(mem::size_of::<CopyEnvelope<[u8; 100]>>() == mem::
 
 impl<'a, Msg: Copy + Send + 'static> CopyEnvelope<'a, Msg> {
     pub(crate) fn new(msg: &'a Msg) -> Self {
-        struct Check<T>(T);
-        impl<T> Check<T> {
-            const VALID: () = assert!(std::mem::size_of::<T>() <= BUF_SIZE);
-        }
-        #[allow(clippy::let_unit_value)]
-        let _ = Check::<Msg>::VALID;
-
+        util::const_assert_sizeof!(Msg, <=, BUF_SIZE, "Attempting to create CopyEnvelope for oversized Msg");
         Self(msg)
     }
 }

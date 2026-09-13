@@ -48,12 +48,7 @@ pub struct LengthError;
 /// Allows conversion from byte array literals, e.g. `b"Hello world".into()`
 impl<const N: usize, const E: u8, const M: usize> std::convert::From<&[u8; M]> for FixedString<N, E> {
     fn from(value: &[u8; M]) -> Self {
-        struct Check<const N: usize, const M: usize>;
-        impl<const N: usize, const M: usize> Check<N, M> {
-            const VALID: () = assert!(M <= N);
-        }
-        #[allow(clippy::let_unit_value)]
-        let _ = Check::<N, M>::VALID;
+        crate::const_assert_generic!(M, <=, N, "FixedString<N> cannot be created from larger bytestring");
         let mut out = Self::new();
         for (i, c) in value.iter().take_while(|&&b| b != E).enumerate() {
             out.0[i] = *c;
