@@ -92,4 +92,3 @@ fn test_chain() {
     assert_eq!(msg0_qty, 3);
     assert_eq!(msg1_qty, 4);
 }
-

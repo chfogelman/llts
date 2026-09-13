@@ -214,9 +214,7 @@ impl<T: Copy> Receiver<T> {
 
     // Helper for implementing `recv` and `try_recv`
     #[inline]
-    fn recv_impl<const BLOCKING: bool>(
-        &self,
-    ) -> Option<Result<T, Lagged>> {
+    fn recv_impl<const BLOCKING: bool>(&self) -> Option<Result<T, Lagged>> {
         let read_count = self.read_count.get();
 
         let block = &self.queue.get(read_count as usize);

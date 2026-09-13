@@ -65,10 +65,7 @@ fn test_percentiles_mul() {
     }
     // True vals:  [853541, 2099413, 4138897, 8999991, 9899990]
     let expected = [853541, 2099414, 4138900, 9018667, 9899994];
-    assert_eq!(
-        histogram.compute_percentiles(&[0.25, 0.50, 0.75, 0.99, 0.999]),
-        expected
-    );
+    assert_eq!(histogram.compute_percentiles(&[0.25, 0.50, 0.75, 0.99, 0.999]), expected);
     assert_eq!(histogram.mean(), 2749997.25);
 
     // True val:                2295828.653957477
@@ -83,10 +80,7 @@ fn test_percentiles_exp() {
     }
     // True vals:  [713, 194796, 15484936, 909881407, 988050915]
     let expected = [713, 195112, 15625000, 910795077, 991026973];
-    assert_eq!(
-        histogram.compute_percentiles(&[0.25, 0.50, 0.75, 0.99, 0.999]),
-        expected
-    );
+    assert_eq!(histogram.compute_percentiles(&[0.25, 0.50, 0.75, 0.99, 0.999]), expected);
     assert_eq!(histogram.mean(), 83277861.0);
     assert_eq!(histogram.std(), 201289373.7545);
 }

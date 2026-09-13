@@ -52,6 +52,7 @@ impl<const N: usize, const E: u8, const M: usize> std::convert::From<&[u8; M]> f
         impl<const N: usize, const M: usize> Check<N, M> {
             const VALID: () = assert!(M <= N);
         }
+        #[allow(clippy::let_unit_value)]
         let _ = Check::<N, M>::VALID;
         let mut out = Self::new();
         for (i, c) in value.iter().take_while(|&&b| b != E).enumerate() {

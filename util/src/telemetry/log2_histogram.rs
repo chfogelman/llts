@@ -9,23 +9,22 @@ impl Bin {
     const fn new() -> Self {
         Self {
             count: 0,
-            min: u64::MAX,
-            max: 0,
+            min:   u64::MAX,
+            max:   0,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Log2Histogram<const BINS: usize, const MAX_VALUE: u64> {
-    count: u64,
-    sum: u64,
-    sum_sq: f64,
-    bins:  [Bin; BINS],
+    count:        u64,
+    sum:          u64,
+    sum_sq:       f64,
+    bins:         [Bin; BINS],
     overflow_bin: Bin,
 }
 
 impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
-
     pub const PRECISION_BITS: u32 = Self::compute_precision_bits();
 
     const RANGE_SIZE: u64 = 1u64 << Self::PRECISION_BITS;
@@ -33,10 +32,10 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
 
     pub fn new() -> Self {
         Self {
-            count: 0,
-            sum: 0,
-            sum_sq: 0.,
-            bins:  [Bin::new(); BINS],
+            count:        0,
+            sum:          0,
+            sum_sq:       0.,
+            bins:         [Bin::new(); BINS],
             overflow_bin: Bin::new(),
         }
     }
@@ -92,7 +91,9 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
             // (x_1, y_1) = (tally + bin.count, max)
             // x = limit
             while let limit = (pcts[pi] * self.count as f64) as u64
-                && tally <= limit && limit < tally + bin.count {
+                && tally <= limit
+                && limit < tally + bin.count
+            {
                 vals[pi] = ((tally + bin.count - limit) * bin.min + (limit - tally) * bin.max) / bin.count;
                 pi += 1;
                 if pi == vals.len() {
@@ -134,7 +135,7 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
     /// precision bits
     const fn compute_precision_bits() -> u32 {
         // Special case:
-        // If we can give each point up to the requested max its own bin, then do so. 
+        // If we can give each point up to the requested max its own bin, then do so.
         if MAX_VALUE < BINS as u64 {
             return 63;
         }

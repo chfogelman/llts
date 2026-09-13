@@ -1,4 +1,4 @@
-use std::cell::{UnsafeCell};
+use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut, Drop};
 use std::sync::atomic::*;
 
@@ -16,7 +16,7 @@ struct State {
 
 pub struct TripleBuffer<T> {
     state: CacheLineAligned<State>,
-    slots:  [CacheLineAligned<UnsafeCell<T>>; 3],
+    slots: [CacheLineAligned<UnsafeCell<T>>; 3],
 }
 
 impl<T: Clone> TripleBuffer<T> {
@@ -27,14 +27,14 @@ impl<T: Clone> TripleBuffer<T> {
         };
         TripleBuffer {
             state: CacheLineAligned(state),
-            slots:  [init.clone(), init.clone(), init].map(|x| CacheLineAligned(UnsafeCell::new(x))),
+            slots: [init.clone(), init.clone(), init].map(|x| CacheLineAligned(UnsafeCell::new(x))),
         }
     }
 }
 
 // SAFETY: We guarantee soundness via the typical triple-buffering scheme.
 // The reader controls one buffer, and the writer controls two.
-// When the reader wants a new value, it swaps 
+// When the reader wants a new value, it swaps
 unsafe impl<T> Sync for TripleBuffer<T> {}
 
 pub struct Reader<P> {
@@ -131,7 +131,7 @@ pub fn new<T, P: Deref<Target = TripleBuffer<T>> + Clone>(tb_ptr: P) -> (Writer<
     };
     let reader = Reader {
         tb:      tb_ptr,
-        current: 2
+        current: 2,
     };
     (writer, reader)
 }

@@ -2,11 +2,17 @@ use std::cell::Cell;
 use std::ops::Drop;
 use std::rc::Rc;
 
-use super::UnmutQueue;
+use super::Queue;
 
+struct DropChecker(Rc<Cell<bool>>);
+impl Drop for DropChecker {
+    fn drop(&mut self) {
+        self.0.set(true)
+    }
+}
 #[test]
 fn push_n_pop_1() {
-    let q = UnmutQueue::with_capacity(1);
+    let q = Queue::with_capacity(1);
     q.push(Box::new([1, 2, 3]) as Box<[i32]>);
     let val = q.pop();
     assert_eq!(*val.unwrap(), vec![1, 2, 3]);
@@ -15,7 +21,7 @@ fn push_n_pop_1() {
 
 #[test]
 fn resize_from_new() {
-    let q = UnmutQueue::new();
+    let q = Queue::new();
     q.push(1);
     assert_eq!(q.pop(), Some(1));
     assert!(q.capacity() > 0);
@@ -24,7 +30,7 @@ fn resize_from_new() {
 
 #[test]
 fn resize() {
-    let q = UnmutQueue::with_capacity(3);
+    let q = Queue::with_capacity(3);
     for i in 0..10 {
         q.push(i);
     }
@@ -35,13 +41,13 @@ fn resize() {
 
 #[test]
 fn pop_empty() {
-    let q = UnmutQueue::<i32>::with_capacity(5);
+    let q = Queue::<i32>::with_capacity(5);
     assert_eq!(q.pop(), None);
 }
 
 #[test]
 fn try_push() {
-    let q = UnmutQueue::with_capacity(2);
+    let q = Queue::with_capacity(2);
     assert!(q.try_push(1).is_ok());
     assert!(q.try_push(2).is_ok());
     assert_eq!(q.capacity(), 2);
@@ -50,16 +56,10 @@ fn try_push() {
 
 #[test]
 fn drop_1() {
-    struct DropChecker(Rc<Cell<bool>>);
-    impl Drop for DropChecker {
-        fn drop(&mut self) {
-            self.0.set(true)
-        }
-    }
     let check = Rc::new(Cell::new(false));
     let dropped = DropChecker(Rc::clone(&check));
     {
-        let q = UnmutQueue::with_capacity(5);
+        let q = Queue::with_capacity(5);
         q.push(dropped);
     }
     assert_eq!(check.get(), true);
@@ -68,16 +68,16 @@ fn drop_1() {
 #[test]
 fn drop_empty() {
     // This test doesn't have any assertions but is intended to be checked by miri
-    let q = UnmutQueue::<i32>::new();
+    let q = Queue::<i32>::new();
     drop(q);
-    let q = UnmutQueue::<i32>::with_capacity(1);
+    let q = Queue::<i32>::with_capacity(1);
     drop(q);
 }
 
 #[test]
 fn push_pop_interleaved() {
     let mut vals = vec![];
-    let q1 = &UnmutQueue::with_capacity(4);
+    let q1 = &Queue::with_capacity(4);
     let q2 = q1;
     q1.push(1);
     q1.push(2);
@@ -95,7 +95,7 @@ fn push_pop_interleaved() {
 
 #[test]
 fn into_iterator() {
-    let q = UnmutQueue::with_capacity(5);
+    let q = Queue::with_capacity(5);
     q.push(Box::new(1));
     q.push(Box::new(2));
     q.push(Box::new(3));
@@ -111,7 +111,7 @@ fn into_iterator() {
 
 #[test]
 fn from_iterator() {
-    let q = UnmutQueue::from_iter((1..=5).map(|x| Box::new(x)));
+    let q = Queue::from_iter((1..=5).map(|x| Box::new(x)));
     let mut i = 1;
     while let Some(x) = q.pop() {
         assert_eq!(i, *x);
@@ -121,20 +121,20 @@ fn from_iterator() {
 
 #[test]
 fn drain() {
-    let q = UnmutQueue::from_iter((1..=5).map(|x| Box::new(x)));
+    let q = Queue::from_iter((1..=5).map(|x| Box::new(x)));
     let mut i = 1;
-    for x in q.drain() {
+    for x in q.drain().take_while(|x| **x < 3) {
         assert_eq!(i, *x);
         i += 1;
     }
-    assert_eq!(q.len(), 0);
+    assert_eq!(q.len(), 0, "queue should be empty after drain");
     assert!(q.capacity() >= 5);
     q.push(Box::new(1)); //Shouldn't panic
 }
 
 #[test]
 fn clone_empty() {
-    let q1 = UnmutQueue::<i32>::new();
+    let q1 = Queue::<i32>::new();
     let q2 = q1.clone();
     assert!(q1.is_empty());
     assert_eq!(q2.capacity(), 0);
@@ -142,7 +142,7 @@ fn clone_empty() {
 
 #[test]
 fn clone() {
-    let q1 = UnmutQueue::from_iter(1..=5);
+    let q1 = Queue::from_iter(1..=5);
     let q2 = q1.clone();
     for x in 1..=5 {
         assert_eq!(q2.pop(), Some(x))
@@ -151,7 +151,7 @@ fn clone() {
 
 #[test]
 fn clone_after_pops() {
-    let q1 = UnmutQueue::from_iter(0..10);
+    let q1 = Queue::from_iter(0..10);
     for _ in 0..5 {
         q1.pop();
     }
@@ -160,4 +160,14 @@ fn clone_after_pops() {
     for i in 5..10 {
         assert_eq!(q2.pop(), Some(i));
     }
+}
+
+#[test]
+fn clear() {
+    let check = Rc::new(Cell::new(false));
+    let dropped = DropChecker(Rc::clone(&check));
+    let q = Queue::with_capacity(5);
+    q.push(dropped);
+    q.clear();
+    assert_eq!(check.get(), true);
 }

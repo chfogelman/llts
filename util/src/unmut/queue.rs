@@ -1,62 +1,50 @@
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
 use std::iter::FusedIterator;
 use std::mem::MaybeUninit;
 use std::ops::Drop;
-use std::ptr::NonNull;
+
+use crate::unmut::buffer::Buffer;
 
 /// A queue that does not require a mutable reference for pushing and popping.
 ///
 /// This is useful when you need a queue that is shared between two owners on the same thread, and
-/// you can't (or don't want to) use [`std::cell::RefCell`]. The tradeoff here is that this
+/// you can't (or don't want to) use [`std::cell::RefCell`]. The tradeoff is that this
 /// container does not implement [`Sync`], and you cannot safely obtain references to the individual
 /// elements in the queue. The operations are generally limited to variations of pushing and popping only.
-pub struct UnmutQueue<T> {
-    buf:  Cell<Option<NonNull<UnsafeCell<MaybeUninit<T>>>>>,
-    cap:  Cell<usize>,
+pub struct Queue<T> {
+    buf:  Buffer<T>,
     head: Cell<usize>,
     len:  Cell<usize>,
 }
 
-impl<T> UnmutQueue<T> {
+impl<T> Queue<T> {
     pub const fn new() -> Self {
         Self {
-            buf:  Cell::new(None),
-            cap:  Cell::new(0),
+            buf:  Buffer::new(),
             head: Cell::new(0),
             len:  Cell::new(0),
         }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let (buf, cap) = if capacity == 0 {
-            (None, 0)
+        let cap = if capacity == 0 || capacity.count_ones() == 1 {
+            capacity
         } else {
-            let capacity = if capacity.count_ones() == 1 {
-                capacity
-            } else {
-                1 << (capacity.ilog2() + 1)
-            };
-            let mem = unsafe {
-                // SAFETY: a [MaybeUninit<UnsafeCell<MaybeUninit<T>>>] is as initialized as it
-                // needs to be.
-                Box::leak(Box::new_uninit_slice(capacity).assume_init())
-            };
-            (NonNull::new(mem.as_mut_ptr()), mem.len())
+            1 << (capacity.ilog2() + 1)
         };
         Self {
-            buf:  Cell::new(buf),
-            cap:  Cell::new(cap),
+            buf:  Buffer::with_capacity(cap),
             head: Cell::new(0),
             len:  Cell::new(0),
         }
     }
 
     pub fn capacity(&self) -> usize {
-        self.cap.get()
+        self.buf.capacity()
     }
 
     fn mask(&self) -> usize {
-        debug_assert_eq!(self.cap.get().count_ones(), 1);
+        debug_assert_eq!(self.capacity().count_ones(), 1);
         self.capacity() - 1
     }
 
@@ -95,11 +83,20 @@ impl<T> UnmutQueue<T> {
             let val = unsafe {
                 // SAFETY: because the length is not 0, we know that the value at index `head` must
                 // be initialized.
-                self.get_raw(offset).read().assume_init()
+                self.buf.get_unchecked_raw(offset).read().assume_init()
             };
             self.len.set(self.len.get() - 1);
             self.head.set((self.head.get() + 1) & self.mask());
             Some(val)
+        }
+    }
+
+    pub fn pop_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<T> {
+        // SAFETY: As long as the queue is not empty, it is safe to inspect the head
+        if !self.is_empty() && unsafe { pred(self.buf.get_unchecked_ref(self.head.get())) } {
+            self.pop()
+        } else {
+            None
         }
     }
 
@@ -109,31 +106,42 @@ impl<T> UnmutQueue<T> {
 
     pub fn swap(&self, other: &Self) {
         self.buf.swap(&other.buf);
-        self.cap.swap(&other.cap);
         self.len.swap(&other.len);
         self.head.swap(&other.head);
     }
 
+    pub fn clear(&self) {
+        for i in self.head.get()..(self.head.get() + self.len()) {
+            let offset = i & self.mask();
+            unsafe {
+                // SAFETY: because this element is between `head` and `head + len`, we are
+                // guaranteed that it is initialized and can be dropped.
+                std::ptr::drop_in_place(self.buf.get_unchecked_mut(offset))
+            }
+        }
+        self.len.set(0)
+    }
+
     unsafe fn realloc_for_push(&self) {
         debug_assert!(self.len() <= self.capacity(), "Invariant violation: length should not exceed capacity");
-        if self.len() == self.capacity() {
-            let new_capacity = if self.capacity() > 0 {
-                debug_assert!(self.buf.get().is_some());
-                2 * self.capacity()
-            } else {
-                debug_assert!(self.buf.get().is_none());
-                1
-            };
-            let other = Self::with_capacity(new_capacity);
-            while let Some(elem) = self.pop() {
-                unsafe {
-                    // SAFETY: we have just constructed `other` with a capacity larger than
-                    // `self`'s.
-                    other.push_unchecked(elem)
-                }
-            }
-            self.swap(&other);
+        if self.len() < self.capacity() {
+            return;
         }
+        let new_capacity = if self.capacity() > 0 {
+            debug_assert!(self.capacity().count_ones() == 1);
+            2 * self.capacity()
+        } else {
+            1
+        };
+        let other = Self::with_capacity(new_capacity);
+        while let Some(elem) = self.pop() {
+            unsafe {
+                // SAFETY: we have just constructed `other` with a capacity larger than
+                // `self`'s.
+                other.push_unchecked(elem)
+            }
+        }
+        self.swap(&other);
     }
 
     /// Push an element to the queue without checking the queue's current capacity.
@@ -142,31 +150,21 @@ impl<T> UnmutQueue<T> {
     /// current number of stored elements.
     unsafe fn push_unchecked(&self, elem: T) {
         debug_assert!(self.len() < self.capacity());
-        debug_assert!(self.buf.get().is_some());
         let offset = (self.head.get() + self.len()) & self.mask();
         unsafe {
-            self.get_raw(offset).write(MaybeUninit::new(elem));
+            self.buf.get_unchecked_raw(offset).write(MaybeUninit::new(elem));
         }
         self.len.set(self.len.get() + 1);
     }
-
-    /// Get a pointer to the element at `offset` from the start of the queue's underlying buffer.
-    ///
-    /// Preconditions: the buffer must be allocated and smaller than the offset
-    unsafe fn get_raw(&self, offset: usize) -> *mut MaybeUninit<T> {
-        debug_assert!(self.buf.get().is_some());
-        debug_assert!(offset < self.capacity());
-        unsafe { self.buf.get().unwrap_unchecked().add(offset).as_ref().get() }
-    }
 }
 
-impl<T: Clone> Clone for UnmutQueue<T> {
+impl<T: Clone> Clone for Queue<T> {
     fn clone(&self) -> Self {
         let new_q = Self::with_capacity(self.len());
         for i in self.head.get()..(self.head.get() + self.len()) {
             let offset = i & self.mask();
             unsafe {
-                let cloned = self.get_raw(offset).as_ref_unchecked().assume_init_ref().clone();
+                let cloned = self.buf.get_unchecked_ref(offset).clone();
                 new_q.push_unchecked(cloned);
             };
         }
@@ -174,26 +172,13 @@ impl<T: Clone> Clone for UnmutQueue<T> {
     }
 }
 
-impl<T> Drop for UnmutQueue<T> {
+impl<T> Drop for Queue<T> {
     fn drop(&mut self) {
-        if let Some(buf) = self.buf.get() {
-            for i in self.head.get()..(self.head.get() + self.len()) {
-                let offset = i & self.mask();
-                unsafe {
-                    // SAFETY: because this element is between `head` and `head + len`, we are
-                    // guaranteed that it is initialized and now needs to be dropped.
-                    self.get_raw(offset).as_mut_unchecked().assume_init_drop()
-                }
-            }
-            unsafe {
-                let slc = std::slice::from_raw_parts_mut(buf.as_ptr(), self.cap.get());
-                std::mem::drop(Box::from_raw(slc));
-            }
-        }
+        self.clear()
     }
 }
 
-impl<T> FromIterator<T> for UnmutQueue<T> {
+impl<T> FromIterator<T> for Queue<T> {
     fn from_iter<Iter: IntoIterator<Item = T>>(iter: Iter) -> Self {
         let iter = iter.into_iter();
         let q = Self::with_capacity(iter.size_hint().1.unwrap_or(0));
@@ -204,7 +189,7 @@ impl<T> FromIterator<T> for UnmutQueue<T> {
     }
 }
 
-pub struct Iter<T>(UnmutQueue<T>);
+pub struct Iter<T>(Queue<T>);
 
 impl<T> Iterator for Iter<T> {
     type Item = T;
@@ -216,7 +201,7 @@ impl<T> Iterator for Iter<T> {
 
 impl<T> FusedIterator for Iter<T> {}
 
-pub struct Drain<'a, T>(&'a UnmutQueue<T>);
+pub struct Drain<'a, T>(&'a Queue<T>);
 
 impl<'a, T> Iterator for Drain<'a, T> {
     type Item = T;
@@ -226,9 +211,15 @@ impl<'a, T> Iterator for Drain<'a, T> {
     }
 }
 
+impl<'a, T> Drop for Drain<'a, T> {
+    fn drop(&mut self) {
+        self.0.clear()
+    }
+}
+
 impl<'a, T> FusedIterator for Drain<'a, T> {}
 
-impl<T> IntoIterator for UnmutQueue<T> {
+impl<T> IntoIterator for Queue<T> {
     type Item = T;
 
     type IntoIter = Iter<T>;

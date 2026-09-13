@@ -86,4 +86,3 @@ fn test_chain() {
     assert_eq!(tester.0, 3);
     assert_eq!(tester.1, 4);
 }
-
