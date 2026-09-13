@@ -158,6 +158,12 @@ impl<T> Queue<T> {
     }
 }
 
+impl<T> Default for Queue<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Clone> Clone for Queue<T> {
     fn clone(&self) -> Self {
         let new_q = Self::with_capacity(self.len());

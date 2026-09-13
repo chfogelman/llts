@@ -102,7 +102,7 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
             }
             tally += bin.count;
         }
-        return vals;
+        vals
     }
 
     pub fn mean(&self) -> f64 {
@@ -171,6 +171,12 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
         let tail_bins_max = 1 << (num_ranges + 1);
         let tail_bin_size = 1 << (num_ranges + 1).saturating_sub(precision_bits as u64);
         tail_bins_max + tail_bins * tail_bin_size - 1
+    }
+}
+
+impl<const BINS: usize, const MAX_VALUE: u64> Default for Log2Histogram<BINS, MAX_VALUE> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

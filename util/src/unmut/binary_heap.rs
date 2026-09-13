@@ -85,6 +85,12 @@ impl<T> BinaryHeap<T> {
     }
 }
 
+impl<T> Default for BinaryHeap<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Ord> BinaryHeap<T> {
     pub fn push(&self, item: T) {
         unsafe {
@@ -111,7 +117,7 @@ impl<T: Ord> BinaryHeap<T> {
         let val = unsafe { self.buf.get_unchecked_raw(0).read().assume_init() };
         // There is now an empty hole at index 0, and the length is correct.
         // we only need to fill the hole and heapify if it was not the last element
-        if self.len() > 0 {
+        if !self.is_empty() {
             unsafe {
                 self.buf
                     .get_unchecked_raw(0)

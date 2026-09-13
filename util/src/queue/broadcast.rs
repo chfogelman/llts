@@ -106,7 +106,7 @@ impl<T> QueueBuf<T> {
         unsafe {
             // SAFETY: We have asserted on construction that the buffer was not constructed with
             // capacity 0.
-            &self.storage.get_unchecked(position & (self.len() - 1))
+            self.storage.get_unchecked(position & (self.len() - 1))
         }
     }
 
