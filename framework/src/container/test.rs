@@ -37,11 +37,13 @@ fn test_receives() {
         }
     }
     impl Context for Tester {
+        type Hub = ();
+
         fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
             <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
         }
 
-        fn stop(&mut self) {
+        fn get_hub(&self) -> &Self::Hub {
             unimplemented!()
         }
     }
@@ -70,12 +72,20 @@ fn test_chain() {
     }
 
     impl Context for Tester<'_> {
+        type Hub = ();
+
         fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
             <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
         }
 
-        fn stop(&mut self) {
+        fn get_hub(&self) -> &Self::Hub {
             unimplemented!()
+        }
+    }
+
+    impl Pipeline for Tester<'_> {
+        fn dispatch<Msg>(&mut self, _msg: &Msg) {
+            // ILB
         }
     }
 
@@ -87,7 +97,7 @@ fn test_chain() {
         .with(Ex2("first"))
         .with(Ex2("second"))
         .with(Ex1("third"))
-        .with_context(tester);
+        .finalize(tester);
     foo.dispatch(&Message0("init", "init", 0));
     assert_eq!(msg0_qty, 3);
     assert_eq!(msg1_qty, 4);

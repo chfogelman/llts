@@ -129,10 +129,10 @@ impl<T: Ord> BinaryHeap<T> {
     }
 
     /// Pop the maximum element if it exists and the predicate returns true
-    pub fn pop_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<T> {
-        // SAFETY: the length is > 0 so the first element is safe to inspect
-        // The predicate cannot store the reference, so it's safe to allow it to be viewed this
-        // way.
+    ///
+    /// The predicate must not modify the binary heap while holding a reference to the first
+    /// element
+    pub unsafe fn pop_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<T> {
         if !self.is_empty() && unsafe { pred(self.buf.get_unchecked_ref(0)) } {
             self.pop()
         } else {

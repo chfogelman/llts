@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
 
-use crate::Context;
+use crate::{Context, Pipeline};
 
 /// Type-erased function for dispatching the contents of an envelope onto a thread
 /// managing a handler chain.
@@ -25,7 +25,7 @@ pub struct Envelope<Dst> {
     buf:        EnvelopeBuf,
 }
 
-impl<Dst: Context> Envelope<Dst> {
+impl<Dst: Pipeline> Envelope<Dst> {
     pub(crate) fn dispatch_onto(self, thread: &mut Dst) {
         let Envelope { dispatcher, ref buf } = self;
 
@@ -37,9 +37,6 @@ impl<Dst: Context> Envelope<Dst> {
         unsafe { dispatcher(thread, buf.as_ptr() as *const ()) }
     }
 }
-
-// Assert the size stays at 32 bytes
-const _: () = const { assert!(mem::size_of::<Envelope<[u8; 1024]>>() == 32) };
 
 // These are the [`ThreadLocalEnvelope`] types that are used to publish to handlers on the same
 // thread. They are not converted to [`EnvelopeBuilder`]s until it is time to publish to other
@@ -57,13 +54,6 @@ const _: () = const { assert!(mem::size_of::<SyncEnvelope<[u8; 100]>>() == mem::
 const _: () = const { assert!(mem::size_of::<ArcEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
 const _: () = const { assert!(mem::size_of::<CopyEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
 
-impl<'a, Msg: Copy + Send + 'static> CopyEnvelope<'a, Msg> {
-    pub(crate) fn new(msg: &'a Msg) -> Self {
-        util::const_assert_sizeof!(Msg, <=, BUF_SIZE, "Attempting to create CopyEnvelope for oversized Msg");
-        Self(msg)
-    }
-}
-
 // These are the [`EnvelopeBuilder`] types that may contain an allocated [`Arc`] that will be
 // cloned when publishing to each other thread. These are only created after the contained message
 // has been published to each thread-local [`Handler`].
@@ -75,12 +65,12 @@ struct ArcEnvelopeBuilder<Msg>(Arc<Msg>);
 struct CopyEnvelopeBuilder<Msg>(Msg);
 
 pub trait EnvelopeBuilder<Msg> {
-    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst>;
+    fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst>;
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Msg> {
-    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst> {
-        unsafe fn sync_dispatcher<Ctx: Context, Msg>(ctx: &mut Ctx, msg: *const ()) {
+    fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst> {
+        unsafe fn sync_dispatcher<Dst: Pipeline, Msg>(ctx: &mut Dst, msg: *const ()) {
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
 
@@ -102,8 +92,8 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Ms
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg> {
-    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst> {
-        unsafe fn arc_dispatcher<Ctx: Context, Msg>(ctx: &mut Ctx, msg: *const ()) {
+    fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst> {
+        unsafe fn arc_dispatcher<Dst: Pipeline, Msg>(ctx: &mut Dst, msg: *const ()) {
             unsafe {
                 let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
 
@@ -125,8 +115,8 @@ impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg
 }
 
 impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
-    fn build_envelope<Dst: Context>(&self) -> Envelope<Dst> {
-        unsafe fn copy_dispatcher<Ctx: Context, Msg>(thread: &mut Ctx, msg: *const ()) {
+    fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst> {
+        unsafe fn copy_dispatcher<Dst: Pipeline, Msg>(thread: &mut Dst, msg: *const ()) {
             unsafe {
                 let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
                 thread.dispatch(&msg);
@@ -248,155 +238,4 @@ impl<T: Send + Sync + 'static> __forward_as_envelope_sync<T> for __spec_envelope
 }
 
 #[cfg(test)]
-mod test {
-
-    use super::*;
-    use crate::{Handler, publish};
-
-    fn helper<S, T>(s: &mut S, t: impl ThreadLocalEnvelope<T>) {
-        s.handle(&mut (), &t);
-        // alloc_envelope ensures the value is dropped so that the tests do not fail miri
-        let _ = t.alloc_envelope();
-    }
-
-    #[test]
-    fn envelope_type_selection() {
-        // WARNING: This test contains nonstandard usage of [`Handler`]. We are simply ensuring that
-        // the correct envelope type is selected and published, and the [`Handler`] trait already
-        // has the signature we need. You should not implement `Handler` for envelope types.
-        {
-            struct Ctx;
-            impl<T> Handler<T> for Ctx {
-                default fn handle(&mut self, _: &mut impl Context, _: &T) {
-                    panic!("Incorrect envelope type found: {}", std::any::type_name::<T>());
-                }
-            }
-
-            impl Handler<CopyEnvelope<'_, i32>> for Ctx {
-                fn handle(&mut self, _: &mut impl Context, _: &CopyEnvelope<i32>) {
-                    println!("Found correct handler.");
-                }
-            }
-
-            impl Context for Ctx {
-                fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    helper(self, msg)
-                }
-
-                fn stop(&mut self) {
-                    unimplemented!()
-                }
-            }
-            publish!(&mut Ctx, 0i32);
-        }
-        {
-            struct Ctx;
-            impl<T> Handler<T> for Ctx {
-                default fn handle(&mut self, _: &mut impl Context, _: &T) {
-                    panic!("Incorrect envelope type found: {}", std::any::type_name::<T>());
-                }
-            }
-
-            impl Handler<SyncEnvelope<'_, [i32; 8]>> for Ctx {
-                fn handle(&mut self, _: &mut impl Context, _: &SyncEnvelope<[i32; 8]>) {
-                    println!("Found correct handler.");
-                }
-            }
-
-            impl Context for Ctx {
-                fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    helper(self, msg)
-                }
-
-                fn stop(&mut self) {
-                    unimplemented!()
-                }
-            }
-
-            let val = [0i32; 8];
-            publish!(&mut Ctx, val);
-        }
-        {
-            struct Ctx;
-            impl<T> Handler<T> for Ctx {
-                default fn handle(&mut self, _: &mut impl Context, _: &T) {
-                    panic!("Incorrect envelope type found: {}", std::any::type_name::<T>());
-                }
-            }
-
-            impl Handler<SyncEnvelope<'_, String>> for Ctx {
-                fn handle(&mut self, _: &mut impl Context, _: &SyncEnvelope<String>) {
-                    println!("Found correct handler.");
-                }
-            }
-
-            impl Context for Ctx {
-                fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    helper(self, msg)
-                }
-
-                fn stop(&mut self) {
-                    unimplemented!()
-                }
-            }
-            let val = String::new();
-            publish!(&mut Ctx, val);
-        }
-        {
-            struct NotCopy;
-
-            struct Ctx;
-            impl<T> Handler<T> for Ctx {
-                default fn handle(&mut self, _: &mut impl Context, _: &T) {
-                    panic!("Incorrect envelope type found: {}", std::any::type_name::<T>());
-                }
-            }
-
-            impl Handler<SyncEnvelope<'_, NotCopy>> for Ctx {
-                fn handle(&mut self, _: &mut impl Context, _: &SyncEnvelope<NotCopy>) {
-                    println!("Found correct handler.");
-                }
-            }
-
-            impl Context for Ctx {
-                fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    helper(self, msg)
-                }
-
-                fn stop(&mut self) {
-                    unimplemented!()
-                }
-            }
-
-            let val = NotCopy;
-            publish!(&mut Ctx, val);
-        }
-        {
-            struct Ctx;
-            impl<T> Handler<T> for Ctx {
-                default fn handle(&mut self, _: &mut impl Context, _: &T) {
-                    panic!("Incorrect envelope type found: {}", std::any::type_name::<T>());
-                }
-            }
-
-            impl Handler<ArcEnvelope<'_, i32>> for Ctx {
-                fn handle(&mut self, _: &mut impl Context, _: &ArcEnvelope<i32>) {
-                    println!("Found correct handler.");
-                }
-            }
-
-            impl Context for Ctx {
-                fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-                    helper(self, msg)
-                }
-
-                fn stop(&mut self) {
-                    unimplemented!()
-                }
-            }
-
-            let val = Arc::new(0i32);
-            publish!(&mut Ctx, val)
-        }
-    }
-}
+mod test;

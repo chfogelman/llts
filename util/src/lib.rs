@@ -35,4 +35,3 @@ macro_rules! const_assert_generic {
         let _ = __Check::<$lo, $hi>::VALID;
     }
 }
-

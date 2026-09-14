@@ -1,16 +1,23 @@
 #![feature(min_specialization)]
 use std::sync::Arc;
 
-use framework::container::{self, Container};
-use framework::{Handler, PollEvent, ThreadBuilder, publish};
+use framework::{Context, Handler, Hub, PollableFn, StartEvent, ThreadBuilder, chain_components, publish};
+
+struct PollEvent;
 
 struct ThreadTheFirst;
+
+impl Handler<StartEvent> for ThreadTheFirst {
+    fn handle(&mut self, ctx: &mut impl Context, _: &StartEvent) {
+        ctx.get_hub().register_pollable(Box::new(PollableFn(|| Ok(PollEvent))))
+    }
+}
 
 impl Handler<PollEvent> for ThreadTheFirst {
     fn handle(&mut self, ctx: &mut impl framework::Context, _: &PollEvent) {
         publish!(ctx, 0i32);
         publish!(ctx, Arc::new(0i32));
-        ctx.stop();
+        ctx.get_hub().stop("Done".into());
     }
 }
 
@@ -38,17 +45,14 @@ fn test() {
         if let Some(location) = payload.location() {
             eprintln!("{},{}", location.file(), location.line());
         }
-        if let Some(s) = payload.payload().downcast_ref::<String>() {
-            eprintln!("{}", s);
-        }
-        if let Some(s) = payload.payload().downcast_ref::<&str>() {
+        if let Some(s) = payload.payload_as_str() {
             eprintln!("{}", s);
         }
         std::process::exit(-1)
     }));
     let _handles = ThreadBuilder::start_threads((
-        container::PipelineBuilder.with(ThreadTheFirst),
-        container::PipelineBuilder.with(ThreadTheSecond {
+        chain_components!(ThreadTheFirst),
+        chain_components!(ThreadTheSecond {
             received_i32: false,
             finished:     false,
         }),

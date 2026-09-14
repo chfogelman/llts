@@ -37,17 +37,24 @@ fn test_receives() {
         }
     }
     impl Context for &mut Tester {
+        type Hub = ();
+
         fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
             <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
         }
-
-        fn stop(&mut self) {
+        fn get_hub(&self) -> &Self::Hub {
             unimplemented!()
         }
     }
 
+    impl Pipeline for &mut Tester {
+        fn dispatch<Msg>(&mut self, _msg: &Msg) {
+            // ILB
+        }
+    }
+
     let mut tester = Tester(false);
-    let mut pipeline = PipelineBuilder.with(ex1).with_context(&mut tester);
+    let mut pipeline = PipelineBuilder.with(ex1).finalize(&mut tester);
     pipeline.dispatch(&Message0("init", "init", 0));
     assert!(tester.0);
 }
@@ -71,17 +78,25 @@ fn test_chain() {
     }
 
     impl Context for &mut Tester {
+        type Hub = ();
+
         fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
             <Self as Handler<Msg>>::handle(self, &mut (), msg.get());
         }
 
-        fn stop(&mut self) {
+        fn get_hub(&self) -> &Self::Hub {
             unimplemented!()
         }
     }
 
+    impl Pipeline for &mut Tester {
+        fn dispatch<Msg>(&mut self, _msg: &Msg) {
+            // ILB
+        }
+    }
+
     let mut tester = Tester(0, 0);
-    let mut foo = chain_components!(Ex2("first"), Ex2("second"), Ex1("third")).with_context(&mut tester);
+    let mut foo = chain_components!(Ex2("first"), Ex2("second"), Ex1("third")).finalize(&mut tester);
     foo.dispatch(&Message0("init", "init", 0));
     assert_eq!(tester.0, 3);
     assert_eq!(tester.1, 4);

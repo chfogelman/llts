@@ -2,26 +2,47 @@
 
 pub mod container;
 pub mod envelope;
+mod hub;
 pub mod messages;
-mod timer;
 mod thread_builder;
+mod timer;
+
+use std::time::{Duration, SystemTime};
 
 use envelope::ThreadLocalEnvelope;
+pub use hub::Hub;
 pub use messages::*;
 pub use thread_builder::ThreadBuilder;
 
 pub trait Context {
+    type Hub: Hub;
+
     #[doc(hidden)]
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>);
 
-    #[allow(unused)]
-    fn dispatch<Msg>(&mut self, msg: &Msg) {}
+    /// Get the [`Hub`] for this pipeline
+    fn get_hub(&self) -> &Self::Hub;
+}
 
-    fn stop(&mut self);
+pub trait Pipeline: Context {
+    /// Dispatch an input message onto this pipeline
+    fn dispatch<Msg>(&mut self, msg: &Msg);
+}
 
-    // FIXME: redesign this
-    fn now(&self) -> std::time::SystemTime {
-        unimplemented!()
+#[derive(Debug, Clone, Copy)]
+pub struct PollError; // TODO
+
+pub trait Pollable<Target: Pipeline> {
+    fn poll(&self, target: &mut Target) -> Result<(), PollError>;
+}
+
+pub struct PollableFn<F>(pub F);
+
+impl<T, P: Pipeline, F: Fn() -> Result<T, PollError>> Pollable<P> for PollableFn<F> {
+    fn poll(&self, target: &mut P) -> Result<(), PollError> {
+        let v = self.0()?;
+        let _: () = target.dispatch(&v);
+        Ok(())
     }
 }
 
@@ -53,11 +74,49 @@ impl<Msg, T> Handler<Msg> for &mut T {
     }
 }
 
-/// No-op [`Context`] implementation for `()`
+/// No-op [`Pipeline`] implementation for `()`
 impl Context for () {
+    type Hub = ();
+
     fn publish<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {}
 
-    fn stop(&mut self) {}
+    fn get_hub(&self) -> &Self::Hub {
+        todo!()
+    }
+}
+
+impl Pipeline for () {
+    fn dispatch<Msg>(&mut self, _msg: &Msg) {
+        todo!()
+    }
+}
+
+impl Hub for () {
+    type Pipeline = ();
+
+    fn poll(&self, _pipeline: &mut Self::Pipeline) {
+        unimplemented!()
+    }
+
+    fn register_pollable(&self, _pollable: Box<dyn Pollable<Self::Pipeline>>) {
+        unimplemented!()
+    }
+
+    fn defer<Msg>(&self, _msg: Msg) {
+        unimplemented!()
+    }
+
+    fn now(&self) -> SystemTime {
+        unimplemented!()
+    }
+
+    fn start_timer<Event: Copy>(&self, _event: Event, _duration: Duration) {
+        unimplemented!()
+    }
+
+    fn stop(&self, _reason: String) {
+        unimplemented!()
+    }
 }
 
 #[macro_export]

@@ -1,5 +1,5 @@
 use crate::envelope::ThreadLocalEnvelope;
-use crate::{Context, Handler};
+use crate::{Context, Handler, Pipeline};
 
 pub struct PipelineBuilder;
 
@@ -10,9 +10,9 @@ pub trait Container {
 
     fn with<H>(self, next: H) -> Self::With<H>;
 
-    type WithContext<Ctx: Context>: Context;
+    type Finalized<P: Pipeline>: Pipeline;
 
-    fn with_context<Ctx: Context>(self, ctx: Ctx) -> Self::WithContext<Ctx>;
+    fn finalize<P: Pipeline>(self, pipeline: P) -> Self::Finalized<P>;
 }
 
 impl Container for PipelineBuilder {
@@ -22,10 +22,10 @@ impl Container for PipelineBuilder {
         Layer(next, Self)
     }
 
-    type WithContext<Ctx: Context> = Ctx;
+    type Finalized<P: Pipeline> = P;
 
-    fn with_context<Ctx: Context>(self, ctx: Ctx) -> Self::WithContext<Ctx> {
-        ctx
+    fn finalize<P: Pipeline>(self, pipeline: P) -> Self::Finalized<P> {
+        pipeline
     }
 }
 
@@ -39,10 +39,10 @@ where
         Layer(self.0, self.1.with(next))
     }
 
-    type WithContext<Ctx: Context> = Layer<A, B::WithContext<Ctx>>;
+    type Finalized<P: Pipeline> = Layer<A, B::Finalized<P>>;
 
-    fn with_context<Ctx: Context>(self, ctx: Ctx) -> Self::WithContext<Ctx> {
-        Layer(self.0, self.1.with_context(ctx))
+    fn finalize<P: Pipeline>(self, pipeline: P) -> Self::Finalized<P> {
+        Layer(self.0, self.1.finalize(pipeline))
     }
 }
 
@@ -50,19 +50,26 @@ impl<A, B> Context for Layer<A, B>
 where
     B: Context,
 {
+    type Hub = B::Hub;
+
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
         <A as Handler<Msg>>::handle(&mut self.0, &mut self.1, msg.get());
         self.1.publish(msg);
     }
 
+    #[inline]
+    fn get_hub(&self) -> &Self::Hub {
+        self.1.get_hub()
+    }
+}
+
+impl<A, B> Pipeline for Layer<A, B>
+where
+    B: Pipeline,
+{
     fn dispatch<Msg>(&mut self, msg: &Msg) {
         <A as Handler<Msg>>::handle(&mut self.0, &mut self.1, msg);
         self.1.dispatch(msg)
-    }
-
-    #[inline]
-    fn stop(&mut self) {
-        self.1.stop();
     }
 }
 

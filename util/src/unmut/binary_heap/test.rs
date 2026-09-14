@@ -83,8 +83,8 @@ fn handles_duplicates() {
 fn pop_if() {
     let heap = BinaryHeap::new();
     heap.push(10);
-    assert_eq!(heap.pop_if(|&x| x < 5), None);
-    assert_eq!(heap.pop_if(|&x| x < 15), Some(10));
+    assert_eq!(unsafe { heap.pop_if(|&x| x < 5) }, None);
+    assert_eq!(unsafe { heap.pop_if(|&x| x < 15) }, Some(10));
 }
 
 #[test]

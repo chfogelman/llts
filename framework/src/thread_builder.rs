@@ -1,98 +1,96 @@
-use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
+use std::time::SystemTime;
 
 use crate::container::Container;
-use crate::envelope::{CopyEnvelope, Envelope, EnvelopeBuilder};
-use crate::{Context, ThreadLocalEnvelope, messages};
+use crate::envelope::{Envelope, EnvelopeBuilder};
+use crate::hub::live_hub::LiveHub;
+use crate::{Context, Hub, Pipeline, Pollable, StartEvent, ThreadLocalEnvelope};
 
-#[derive(Clone, Copy)]
-struct Shutdown;
+pub struct Disconnected;
 
-struct ThreadContext<T>
+pub struct ThreadHub<T>
 where
-    T: ThreadInfo,
+    T: Thread,
 {
-    senders:        T::Senders,
-    stop_requested: Cell<bool>,
+    senders:  T::Senders,
+    hub_impl: LiveHub<<T as Thread>::Pipeline>,
 }
 
-impl<T> Context for Rc<ThreadContext<T>>
+impl<T> Hub for ThreadHub<T>
 where
-    T: ThreadInfo,
+    T: Thread,
 {
+    type Pipeline = T::Pipeline;
+
+    fn poll(&self, pipeline: &mut Self::Pipeline) {
+        self.hub_impl.poll(pipeline);
+    }
+
+    fn register_pollable(&self, pollable: Box<dyn Pollable<Self::Pipeline>>) {
+        self.hub_impl.register_pollable(pollable);
+    }
+
+    fn defer<Msg>(&self, msg: Msg) {
+        self.hub_impl.defer(msg)
+    }
+
+    fn now(&self) -> SystemTime {
+        self.hub_impl.now()
+    }
+
+    fn start_timer<Event: Copy>(&self, event: Event, duration: std::time::Duration) {
+        self.hub_impl.start_timer(event, duration);
+    }
+
+    fn stop(&self, reason: String) {
+        self.hub_impl.stop(reason);
+    }
+}
+
+impl<T> Context for Rc<ThreadHub<T>>
+where
+    T: Thread,
+{
+    type Hub = ThreadHub<T>;
+
     fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-        self.senders.send(msg);
+        if self.senders.send(msg).is_err() {
+            self.stop("Sender disconnected".into());
+        }
     }
 
-    fn stop(&mut self) {
-        self.stop_requested.set(true);
-        self.senders.try_send(CopyEnvelope::new(&Shutdown));
+    fn get_hub(&self) -> &Self::Hub {
+        self
     }
 }
 
-pub struct Pipeline<T>
+impl<T> Pipeline for Rc<ThreadHub<T>>
 where
-    T: ThreadInfo,
+    T: Thread,
 {
-    egress:  Rc<ThreadContext<T>>,
-    ingress: <<T as ThreadInfo>::Container as Container>::WithContext<Rc<ThreadContext<T>>>,
-}
-
-trait MsgInFilter<Msg> {
-    fn filter(&mut self, msg: &Msg);
-}
-
-impl<Msg, T> MsgInFilter<Msg> for Pipeline<T>
-where
-    T: ThreadInfo,
-{
-    default fn filter(&mut self, msg: &Msg) {
-        self.ingress.dispatch(msg)
+    fn dispatch<Msg>(&mut self, _msg: &Msg) {
+        // Intentionally blank.
+        // This is the end of the line for dispatching
+        // TODO: maybe this should be used to implement input event capture and sequencing?
     }
 }
 
-impl<T> MsgInFilter<Shutdown> for Pipeline<T>
-where
-    T: ThreadInfo,
-{
-    fn filter(&mut self, _: &Shutdown) {
-        self.egress.stop_requested.set(true)
-    }
-}
-
-impl<T> Context for Pipeline<T>
-where
-    T: ThreadInfo,
-{
-    fn publish<Msg>(&mut self, _: impl ThreadLocalEnvelope<Msg>) {
-        unimplemented!()
-    }
-
-    fn dispatch<Msg>(&mut self, msg: &Msg) {
-        <Self as MsgInFilter<Msg>>::filter(self, msg)
-    }
-
-    fn stop(&mut self) {
-        unimplemented!()
-    }
-}
-
-pub struct Thread<C, Others>
+pub struct ThreadImpl<C, Others>
 where
     C: Container + Send + 'static,
-    Others: Hub + 'static,
+    Others: Bus + 'static,
 {
     container: C,
-    receiver:  Receiver<Envelope<Pipeline<Self>>>,
-    senders:   <Self as ThreadInfo>::Senders,
+    receiver:  <Self as Thread>::Receiver,
+    senders:   <Self as Thread>::Senders,
 }
 
-impl<C, H> Thread<C, H>
+impl<C, B> ThreadImpl<C, B>
 where
     C: Container + Send,
-    H: Hub,
+    B: Bus,
 {
     fn start_event_loop(self) {
         let Self {
@@ -100,29 +98,16 @@ where
             receiver,
             senders,
         } = self;
-
-        let thread_context = Rc::new(ThreadContext {
+        let thread_hub = Rc::new(ThreadHub::<Self> {
             senders,
-            stop_requested: Cell::new(false),
+            hub_impl: LiveHub::new(),
         });
+        thread_hub.register_pollable(Box::new(receiver));
+        let mut pipeline = container.finalize(Rc::clone(&thread_hub));
 
-        let mut pipeline = Pipeline {
-            egress:  Rc::clone(&thread_context),
-            ingress: container.with_context(Rc::clone(&thread_context)),
-        };
-
-        while !thread_context.stop_requested.get() {
-            pipeline.dispatch(&messages::PollEvent);
-            let next = receiver.try_recv();
-            match next {
-                Ok(msg) => {
-                    msg.dispatch_onto(&mut pipeline);
-                },
-                Err(TryRecvError::Empty) => {},
-                Err(TryRecvError::Disconnected) => {
-                    unreachable!();
-                },
-            }
+        pipeline.dispatch(&StartEvent);
+        while !thread_hub.hub_impl.stop_requested() {
+            thread_hub.poll(&mut pipeline);
         }
     }
 }
@@ -133,14 +118,27 @@ pub trait ThreadBuilder {
     fn start_threads(self) -> Vec<thread::Result<()>>;
 }
 
-pub trait Hub {
+pub trait Bus {
     type Handles<T: Container + Send + 'static>: Senders + Send + 'static;
 }
 
-type Channel<T> = (<T as ThreadInfo>::Sender, <T as ThreadInfo>::Receiver);
+#[allow(type_alias_bounds)]
+type Channel<T: Thread> = (T::Sender, T::Receiver);
 
-pub trait ThreadInfo {
-    type Container: Container;
+impl<P: Pipeline> Pollable<P> for Receiver<Envelope<P>> {
+    fn poll(&self, target: &mut P) -> Result<(), crate::PollError> {
+        let next = self.try_recv();
+        match next {
+            Ok(msg) => msg.dispatch_onto(target),
+            Err(TryRecvError::Empty) => (),
+            Err(TryRecvError::Disconnected) => target.get_hub().stop("Receiver disconnected".into()),
+        }
+        Ok(())
+    }
+}
+
+pub trait Thread {
+    type Pipeline: Pipeline;
     type Channel;
     type Sender;
     type Receiver;
@@ -153,16 +151,16 @@ pub trait ThreadInfo {
     ) -> thread::ScopedJoinHandle<'scope, ()>;
 }
 
-impl<C, B> ThreadInfo for Thread<C, B>
+impl<C, B> Thread for ThreadImpl<C, B>
 where
     C: Container + Send,
-    B: Hub,
+    B: Bus,
 {
-    type Container = C;
-    type Sender = Sender<Envelope<Pipeline<Self>>>;
-    type Receiver = Receiver<Envelope<Pipeline<Self>>>;
+    type Pipeline = C::Finalized<Rc<ThreadHub<Self>>>;
+    type Sender = Sender<Envelope<Self::Pipeline>>;
+    type Receiver = Receiver<Envelope<Self::Pipeline>>;
     type Channel = Channel<Self>;
-    type Senders = <B as Hub>::Handles<C>;
+    type Senders = <B as Bus>::Handles<C>;
 
     fn make_channel() -> Channel<Self> {
         channel()
@@ -179,88 +177,84 @@ where
     }
 }
 
-type ThreadHandle<T> = Sender<Envelope<Pipeline<T>>>;
-
 pub trait Senders {
-    fn send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>);
-
-    fn try_send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>);
+    fn send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) -> Result<(), Disconnected>;
 }
 
 impl Senders for () {
-    fn send<Msg>(&self, _msg: impl ThreadLocalEnvelope<Msg>) {}
-
-    fn try_send<Msg>(&self, _msg: impl ThreadLocalEnvelope<Msg>) {}
-}
-
-macro_rules! peel_impl_context_for_handles {
-    ($t:ident, $($ts:ident,)*) => {
-        impl_context_for_handles!{$($ts,)*}
+    fn send<Msg>(&self, _msg: impl ThreadLocalEnvelope<Msg>) -> Result<(), Disconnected> {
+        Ok(())
     }
 }
 
-macro_rules! impl_context_for_handles {
+macro_rules! peel_impl_senders_for_handles {
+    ($t:ident, $($ts:ident,)*) => {
+        impl_senders_for_handles!{$($ts,)*}
+    }
+}
+
+macro_rules! impl_senders_for_handles {
     () => {};
     ($($ts:ident,)+) => {
-        impl<$($ts: ThreadInfo,)+> Senders for ($(ThreadHandle<$ts>,)+) {
+        impl<$($ts: Pipeline,)+> Senders for ($(Sender<Envelope<$ts>>,)+) {
             #[allow(non_snake_case)]
-            fn send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) {
+            fn send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) -> Result<(), Disconnected> {
                 let msg = msg.alloc_envelope();
                 let ($($ts,)+) = self;
-                $({$ts.send(msg.build_envelope()).unwrap()})+
-            }
-
-            #[allow(non_snake_case)]
-            fn try_send<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) {
-                let msg = msg.alloc_envelope();
-                let ($($ts,)+) = self;
-                let _ = ($($ts.send(msg.build_envelope()),)+);
+                let successful = [$(
+                    $ts.send(msg.build_envelope()).is_err(),
+                )+].into_iter().any(|b| b);
+                if successful {
+                    Ok(())
+                } else {
+                    Err(Disconnected)
+                }
             }
         }
-        peel_impl_context_for_handles!{$($ts,)+}
+        peel_impl_senders_for_handles!{$($ts,)+}
     };
 }
 
-impl_context_for_handles! {A, B, C, D, E, F, G, H, I, J,}
+impl_senders_for_handles! {A, B, C, D, E, F, G, H, I, J,}
 
-macro_rules! impl_hub_type {
+macro_rules! impl_bus_type {
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), (), ($($accum:ty,)*)) => { ($($accum,)*) };
     ($slf:ident, ($($prev_xs:ident,)*), ($x:ident, $($xs:ident,)*), (), ($($ys:ident,)*), ($($accum:ty,)*)) => {
-        impl_hub_type!($slf, ($($prev_xs,)* $x,), ($($xs,)*), (), ($($ys,)*),
-            ($($accum,)* ThreadHandle<Thread<$x, (($($prev_xs,)*), ($($xs,)* $slf, $($ys,)*))>>,))
+        impl_bus_type!($slf, ($($prev_xs,)* $x,), ($($xs,)*), (), ($($ys,)*),
+            ($($accum,)* <ThreadImpl<$x, (($($prev_xs,)*), ($($xs,)* $slf, $($ys,)*))> as Thread>::Sender,))
     };
     ($slf:ident, ($($prev_xs:ident,)*), (), ($($prev_ys:ident,)*), ($y:ident, $($ys:ident,)*), ($($accum:ty,)*)) => {
-        impl_hub_type!($slf, ($($prev_xs,)*), (), ($($prev_ys,)* $y,), ($($ys,)*),
-            ($($accum,)* ThreadHandle<Thread<$y, (($($prev_xs,)* $slf, $($prev_ys,)*), ($($ys,)*))>>,))
+        impl_bus_type!($slf, ($($prev_xs,)*), (), ($($prev_ys,)* $y,), ($($ys,)*),
+            ($($accum,)* <ThreadImpl<$y, (($($prev_xs,)* $slf, $($prev_ys,)*), ($($ys,)*))> as Thread>::Sender,))
     };
 }
 
-macro_rules! impl_hubs {
+macro_rules! impl_buses {
     (($($ts:ident,)*), ()) => {};
     (($($ts:ident,)*), ($u:ident, $($us:ident,)*)) => {
-        impl<$($ts: Container + Send + 'static,)* $($us: Container + Send + 'static,)*> Hub for (($($ts,)*), ($($us,)*)) {
-            type Handles<$u: Container + Send + 'static> = impl_hub_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
+        impl<$($ts: Container + Send + 'static,)* $($us: Container + Send + 'static,)*> Bus for (($($ts,)*), ($($us,)*)) {
+            type Handles<$u: Container + Send + 'static> = impl_bus_type!{$u, (), ($($ts,)*), (), ($($us,)*), ()};
         }
-        impl_hubs!{($($ts,)* $u,), ($($us,)*)}
+        impl_buses!{($($ts,)* $u,), ($($us,)*)}
     };
 }
 
-macro_rules! impl_all_hubs {
+macro_rules! impl_all_buses {
     () => {};
     ($t:ident, $($ts:ident,)*) => {
-        impl_hubs!{(), ($t, $($ts,)*)}
-        impl_all_hubs!{$($ts,)*}
+        impl_buses!{(), ($t, $($ts,)*)}
+        impl_all_buses!{$($ts,)*}
     };
 }
 
-impl_all_hubs! {A, B, C, D, E, F, G, H, I, J,}
+impl_all_buses! {A, B, C, D, E, F, G, H, I, J,}
 
 macro_rules! thread_builder_threads_type {
     ( ($($prev:ident,)*), (), ($($accum:ty,)*) ) => {
         ($($accum,)*)
     };
     ( ($($prev:ident,)*), ($t:ident, $($ts:ident,)*), ($($accum:ty,)*) ) => {
-        thread_builder_threads_type!(($($prev,)* $t,), ($($ts,)*), ($($accum,)* Thread<$t, (($($prev,)*), ($($ts,)*))>,))
+        thread_builder_threads_type!(($($prev,)* $t,), ($($ts,)*), ($($accum,)* ThreadImpl<$t, (($($prev,)*), ($($ts,)*))>,))
     };
 }
 
@@ -284,7 +278,7 @@ macro_rules! impl_thread_builder {
                 let ($($ts,)+) = self;
                 let ($($channels,)+) = channels;
                 thread::scope(|s| {
-                    let handles = vec![$(Thread {
+                    let handles = vec![$(ThreadImpl {
                         container: $ts,
                         receiver: $channels.0,
                         senders: $channels.1,
@@ -317,10 +311,10 @@ macro_rules! peel_channel_builder {
 macro_rules! impl_channel_builder {
     () => {};
     ($($ts:ident,)*) => {
-        impl<$($ts:ThreadInfo + Send,)*> ChannelBuilder for ($($ts,)*) {
+        impl<$($ts:Thread + Send,)*> ChannelBuilder for ($($ts,)*) {
             type Channels = ($(Channel<$ts>,)*);
             fn get_channels() -> Self::Channels {
-                ($(<$ts as ThreadInfo>::make_channel(),)*)
+                ($(<$ts as Thread>::make_channel(),)*)
             }
         }
         peel_channel_builder!{$($ts,)*}
