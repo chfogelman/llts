@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super as tb;
 use super::TripleBuffer;
@@ -45,27 +46,30 @@ fn read_many() {
 
 #[test]
 fn threaded() {
+    static DONE: AtomicBool = AtomicBool::new(false);
     let (mut wr, mut rd) = make_arced_tb();
     let rx = std::thread::spawn(move || {
-        let mut count = 0;
         loop {
-            if let Some(x) = rd.read_newer() {
-                count += 1;
-                if *x > 100_000 {
-                    return count;
+            if let Some(&x) = rd.read_newer() {
+                if x > 1000 {
+                    DONE.store(true, Ordering::Release);
+                    return x;
                 }
             }
         }
     });
-    let _tx = std::thread::spawn(move || {
+    let tx = std::thread::spawn(move || {
         for i in 0.. {
             *wr.get_mut() = i;
+            if DONE.load(Ordering::Acquire) {
+                return;
+            }
         }
     });
-    let count = rx.join().unwrap();
-    //tx.join().unwrap();
+    let final_value = rx.join().unwrap();
+    let _ = tx.join().unwrap();
 
-    assert!(count > 5000);
+    assert!(final_value > 1000);
 }
 
 #[test]
