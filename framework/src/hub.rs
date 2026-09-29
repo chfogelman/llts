@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime};
 
 use crate::{Pipeline, Pollable};
 
-pub mod live_hub;
+pub mod live;
 
 pub trait Hub {
     type Pipeline: Pipeline;

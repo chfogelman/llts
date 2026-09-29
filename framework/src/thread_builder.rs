@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use crate::container::Container;
 use crate::envelope::{Envelope, EnvelopeBuilder};
-use crate::hub::live_hub::LiveHub;
+use crate::hub::live::LiveHub;
 use crate::{Context, Hub, Pipeline, Pollable, StartEvent, ThreadLocalEnvelope};
 
 pub struct Disconnected;

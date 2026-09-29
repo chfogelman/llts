@@ -1,7 +1,7 @@
 use std::cmp::{Ord, PartialOrd};
-use std::mem;
 use std::time::SystemTime;
 
+use util::type_erasure::TypeErasedFn;
 use util::unmut::binary_heap::BinaryHeap;
 
 use crate::{Hub, Pipeline};
@@ -10,8 +10,7 @@ const PAYLOAD_SIZE: usize = 16;
 
 struct Timer<P> {
     expiration: SystemTime, // TODO: replace with 6-byte time
-    dispatcher: unsafe fn(&mut P, *const ()),
-    payload:    [mem::MaybeUninit<u8>; PAYLOAD_SIZE],
+    dispatcher: TypeErasedFn<PAYLOAD_SIZE, P>,
 }
 
 struct TimerQueueElement<P>(Timer<P>);
@@ -53,21 +52,9 @@ impl<P> TimerManager<P> {
 impl<P: Pipeline> TimerManager<P> {
     pub fn start_timer<Payload: Copy>(&self, payload: Payload, expiration: SystemTime) {
         util::const_assert_sizeof!(Payload, <=, PAYLOAD_SIZE, "Timer payload must be at most 16 bytes");
-
-        unsafe fn timer_dispatcher<P: Pipeline, Payload>(pipeline: &mut P, payload: *const ()) {
-            let payload = unsafe { core::ptr::read_unaligned(payload as *const Payload) };
-            pipeline.dispatch(&payload);
-        }
-
-        let buf = unsafe {
-            let mut buf = [std::mem::MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Payload, payload);
-            buf
-        };
         let timer = Timer {
             expiration,
-            dispatcher: timer_dispatcher::<P, Payload>,
-            payload: buf,
+            dispatcher: TypeErasedFn::new(move |pipeline: &mut P| pipeline.dispatch(&payload)),
         };
         self.timers.push(TimerQueueElement(timer));
     }
@@ -76,20 +63,10 @@ impl<P: Pipeline> TimerManager<P> {
         let now = pipeline.get_hub().now();
         unsafe {
             // SAFETY: The predicate only inspects the first element, not modifying the binary heap
-            // binary heap
             while let Some(TimerQueueElement(timer)) = self.timers.pop_if(|tqe| tqe.0.expiration <= now) {
-                Self::dispatch_timer(pipeline, timer);
+                timer.dispatcher.call(pipeline)
             }
         }
-    }
-
-    fn dispatch_timer(pipeline: &mut P, timer: Timer<P>) {
-        let Timer {
-            dispatcher,
-            ref payload,
-            ..
-        } = timer;
-        unsafe { dispatcher(pipeline, payload.as_ptr() as *const ()) }
     }
 }
 

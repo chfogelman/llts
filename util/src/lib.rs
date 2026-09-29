@@ -7,6 +7,7 @@ pub mod lockfree;
 pub mod logger;
 pub mod queue;
 pub mod telemetry;
+pub mod type_erasure;
 pub mod unmut;
 
 pub use bstr::FixedString;

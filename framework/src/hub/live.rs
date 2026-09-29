@@ -15,7 +15,7 @@ impl<P> LiveHub<P> {
         Self {
             timer_manager:  TimerManager::new(2048),
             stop_requested: Cell::new(false),
-            pollables:      RefCell::new(Vec::new()),
+            pollables:      RefCell::new(Vec::new()), // FIXME
         }
     }
 

@@ -2,16 +2,11 @@ use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
 
+use util::type_erasure::TypeErasedSendFn;
+
 use crate::{Context, Pipeline};
 
-/// Type-erased function for dispatching the contents of an envelope onto a thread
-/// managing a handler chain.
-type DispatchFn<T> = unsafe fn(&mut T, *const ());
-
 const BUF_SIZE: usize = 24;
-
-/// Byte buffer for storing a type-erased object inside an envelope
-type EnvelopeBuf = [mem::MaybeUninit<u8>; BUF_SIZE];
 
 /// Type-erased envelope for sending messages between threads.
 ///
@@ -21,20 +16,12 @@ type EnvelopeBuf = [mem::MaybeUninit<u8>; BUF_SIZE];
 /// be incorrect for this type. [`Envelope::dispatch_onto`] must consume the Envelope and drop the
 /// contained message
 pub struct Envelope<Dst> {
-    dispatcher: DispatchFn<Dst>,
-    buf:        EnvelopeBuf,
+    closure: TypeErasedSendFn<BUF_SIZE, Dst>,
 }
 
 impl<Dst: Pipeline> Envelope<Dst> {
     pub(crate) fn dispatch_onto(self, thread: &mut Dst) {
-        let Envelope { dispatcher, ref buf } = self;
-
-        // SAFETY: We make sure to use the dispatcher on this message with the message itself. It
-        // would only be UB to use the dispatcher of one message with the buffer of another.
-        // NOTE: You may feel compelled to change `self` to `&self`. DON'T. The `dispatcher`
-        // function is also responsible for dropping the type-erased message. This function must be
-        // called only once for an envelope.
-        unsafe { dispatcher(thread, buf.as_ptr() as *const ()) }
+        self.closure.call(thread)
     }
 }
 
@@ -70,68 +57,27 @@ pub trait EnvelopeBuilder<Msg> {
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for SyncEnvelopeBuilder<Msg> {
     fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst> {
-        unsafe fn sync_dispatcher<Dst: Pipeline, Msg>(ctx: &mut Dst, msg: *const ()) {
-            unsafe {
-                let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
-
-                // Ensure dispatch as &Msg. No failure to coerce
-                ctx.dispatch(&*msg as &Msg);
-            }
-        }
-
-        let buf = unsafe {
-            let mut buf = [mem::MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Arc<Msg>, Arc::clone(&self.0));
-            buf
-        };
-        Envelope {
-            dispatcher: sync_dispatcher::<Dst, Msg>,
-            buf,
-        }
+        let msg = Arc::clone(&self.0);
+        // Force deref coercion; the object was published as the inner type
+        let closure = TypeErasedSendFn::new(move |dst: &mut Dst| dst.dispatch(&*msg as &Msg));
+        Envelope { closure }
     }
 }
 
 impl<Msg: Send + Sync + 'static> EnvelopeBuilder<Msg> for ArcEnvelopeBuilder<Msg> {
     fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst> {
-        unsafe fn arc_dispatcher<Dst: Pipeline, Msg>(ctx: &mut Dst, msg: *const ()) {
-            unsafe {
-                let msg: Arc<Msg> = core::ptr::read_unaligned(msg as *const Arc<Msg>);
-
-                // Ensure dispatch as Arc. No deref coercion
-                ctx.dispatch(&msg as &Arc<_>);
-            }
-        }
-
-        let buf = unsafe {
-            let mut buf = [mem::MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Arc<Msg>, Arc::clone(&self.0));
-            buf
-        };
-        Envelope {
-            dispatcher: arc_dispatcher::<Dst, Msg>,
-            buf,
-        }
+        let msg = Arc::clone(&self.0);
+        // Prevent deref coercion, the object was published as an Arc
+        let closure = TypeErasedSendFn::new(move |dst: &mut Dst| dst.dispatch(&msg as &Arc<_>));
+        Envelope { closure }
     }
 }
 
 impl<Msg: Copy + Send + 'static> EnvelopeBuilder<Msg> for CopyEnvelopeBuilder<Msg> {
     fn build_envelope<Dst: Pipeline>(&self) -> Envelope<Dst> {
-        unsafe fn copy_dispatcher<Dst: Pipeline, Msg>(thread: &mut Dst, msg: *const ()) {
-            unsafe {
-                let msg: Msg = core::ptr::read_unaligned(msg as *const Msg);
-                thread.dispatch(&msg);
-            }
-        }
-
-        let buf = unsafe {
-            let mut buf = [mem::MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut Msg, self.0);
-            buf
-        };
-        Envelope {
-            dispatcher: copy_dispatcher::<Dst, Msg>,
-            buf,
-        }
+        let msg = self.0;
+        let closure = TypeErasedSendFn::new(move |dst: &mut Dst| dst.dispatch(&msg));
+        Envelope { closure }
     }
 }
 
