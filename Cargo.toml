@@ -19,3 +19,17 @@ members = [
 
 [workspace.dependencies]
 zerocopy = { version = "0.8.27", features = ["derive"]}
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -2 }
+complexity = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+type_complexity = "allow"
+enum_glob_use = "forbid"
+unwrap_used = "deny" # TODO: forbid
+wildcard_enum_match_arm = "deny"
+undocumented_unsafe_blocks = "forbid"
+missing_assert_message = "deny"
+use_self = "deny"
+redundant_else = "allow"

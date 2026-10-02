@@ -16,6 +16,7 @@ pub struct BinaryHeap<T> {
 }
 
 impl<T> BinaryHeap<T> {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             buf: Buffer::new(),
@@ -23,6 +24,7 @@ impl<T> BinaryHeap<T> {
         }
     }
 
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             buf: Buffer::with_capacity(capacity),
@@ -47,7 +49,7 @@ impl<T> BinaryHeap<T> {
         self.len.swap(&other.len);
     }
 
-    unsafe fn realloc_for_push(&self) {
+    fn realloc_for_push(&self) {
         debug_assert!(self.len() <= self.capacity(), "Invariant violation: length should not exceed capacity");
         if self.len() < self.capacity() {
             return;
@@ -78,7 +80,7 @@ impl<T> BinaryHeap<T> {
         for i in 0..self.len() {
             unsafe {
                 // SAFETY: self.len() is the upper bound on initialized elements
-                std::ptr::drop_in_place(self.buf.get_unchecked_mut(i))
+                std::ptr::drop_in_place(self.buf.get_unchecked_mut(i));
             }
         }
         self.len.set(0);
@@ -92,13 +94,19 @@ impl<T> Default for BinaryHeap<T> {
 }
 
 impl<T: Ord> BinaryHeap<T> {
+    /// Pushes an item to the heap, reallocating if necessary
     pub fn push(&self, item: T) {
+        self.realloc_for_push();
         unsafe {
-            self.realloc_for_push();
+            // SAFETY: We have just realloc'ed
             self.push_unchecked(item);
         }
     }
 
+    /// Pushes an item to the heap if there's available capacity
+    ///
+    /// # Errors
+    /// Returns the item if the heap is full
     pub fn try_push(&self, item: T) -> Result<(), T> {
         if self.len() == self.capacity() {
             self.push(item);
@@ -108,17 +116,22 @@ impl<T: Ord> BinaryHeap<T> {
         }
     }
 
+    /// Pops an item from the heap, if nonempty
     pub fn pop(&self) -> Option<T> {
-        debug_assert!(self.len() <= self.capacity());
+        debug_assert!(self.len() <= self.capacity(), "Invariant violation: length exceeds capacity");
         if self.is_empty() {
             return None;
         }
         self.len.set(self.len() - 1);
-        let val = unsafe { self.buf.get_unchecked_raw(0).read().assume_init() };
+        let val = unsafe {
+            // SAFETY: we cannot reach this point if the queue is empty
+            self.buf.get_unchecked_raw(0).read().assume_init()
+        };
         // There is now an empty hole at index 0, and the length is correct.
         // we only need to fill the hole and heapify if it was not the last element
         if !self.is_empty() {
             unsafe {
+                // SAFETY: the buffer is guaranteed non-empty
                 self.buf
                     .get_unchecked_raw(0)
                     .write(self.buf.get_unchecked_raw(self.len()).read());
@@ -130,10 +143,16 @@ impl<T: Ord> BinaryHeap<T> {
 
     /// Pop the maximum element if it exists and the predicate returns true
     ///
-    /// The predicate must not modify the binary heap while holding a reference to the first
-    /// element
+    /// # Safety
+    /// The caller must ensure that calls to `pred` cannot modify the binary heap while a reference
+    /// to the first element is held.
     pub unsafe fn pop_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<T> {
-        if !self.is_empty() && unsafe { pred(self.buf.get_unchecked_ref(0)) } {
+        if !self.is_empty()
+            && unsafe {
+                // SAFETY: inside unsafe fn
+                pred(self.buf.get_unchecked_ref(0))
+            }
+        {
             self.pop()
         } else {
             None
@@ -141,7 +160,7 @@ impl<T: Ord> BinaryHeap<T> {
     }
 
     unsafe fn push_unchecked(&self, item: T) {
-        debug_assert!(self.len() < self.capacity());
+        debug_assert!(self.len() < self.capacity(), "Invariant violation: pushing without available capacity");
         let idx = self.len();
         unsafe {
             // SAFETY: the precondition self.len() < self.capacity() is met, so we can write to
@@ -166,34 +185,37 @@ impl<T: Ord> BinaryHeap<T> {
     }
 
     unsafe fn sift_down(&self, mut largest: usize) {
-        unsafe {
-            loop {
-                let left = (largest * 2) + 1;
-                let right = (largest + 1) * 2;
-                let mut target = largest;
+        loop {
+            let left = (largest * 2) + 1;
+            let right = (largest + 1) * 2;
+            let mut target = largest;
+            unsafe {
                 // SAFETY: target != left
                 if left < self.len() && self.buf.get_unchecked_ref(target) < self.buf.get_unchecked_ref(left) {
                     target = left;
                 }
+            }
+            unsafe {
                 // SAFETY: target == left or target == largest, but target != right
                 if right < self.len() && self.buf.get_unchecked_ref(target) < self.buf.get_unchecked_ref(right) {
                     target = right;
                 }
-                if target != largest {
-                    // SAFETY: target obvs != largest
-                    std::mem::swap(self.buf.get_unchecked_mut(target), self.buf.get_unchecked_mut(largest));
-                    largest = target;
-                } else {
-                    break;
-                }
             }
+            if target == largest {
+                break;
+            }
+            unsafe {
+                // SAFETY: target obvs != largest
+                std::mem::swap(self.buf.get_unchecked_mut(target), self.buf.get_unchecked_mut(largest));
+            }
+            largest = target;
         }
     }
 }
 
 impl<T> Drop for BinaryHeap<T> {
     fn drop(&mut self) {
-        self.clear()
+        self.clear();
     }
 }
 

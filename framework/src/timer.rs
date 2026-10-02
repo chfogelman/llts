@@ -24,6 +24,7 @@ impl<P> PartialEq for TimerQueueElement<P> {
 impl<P> Eq for TimerQueueElement<P> {}
 
 impl<P> PartialOrd for TimerQueueElement<P> {
+    #![allow(clippy::non_canonical_partial_ord_impl)]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         // Reversed because BinaryHeap is a max heap
         other.0.expiration.partial_cmp(&self.0.expiration)

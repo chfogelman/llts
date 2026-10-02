@@ -1,3 +1,5 @@
+#![allow(clippy::missing_assert_message)]
+
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, btree_map, hash_map};
 use std::fmt::Debug;
@@ -36,6 +38,7 @@ where
         self.asks.iter().map(|(&px, lvl)| (px, lvl.quantity))
     }
 
+    #[must_use]
     pub fn get_top(&self) -> Option<events::Top<Traits>> {
         let bid = self.bids.first_key_value()?;
         let ask = self.asks.first_key_value()?;
@@ -91,7 +94,7 @@ where
                 quantity: Default::default(),
             });
             level.quantity += quantity;
-            key == *levels.first_key_value().unwrap().0
+            key == *levels.first_key_value().expect("An inhabited level").0
         }
         match side {
             Side::Bid => helper(&mut self.book.bids, Reverse(price), seqno, quantity),
@@ -207,7 +210,7 @@ where
                 seqno,
             },
         ) {
-            panic!("Adding order ID {} that replaces previous order {:?}", id, prev);
+            panic!("Adding order ID {id} that replaces previous order {prev:?}");
         }
         if book.add(seqno, side, quantity, price) {
             self.handler.on_quote(&book.book, &mut book.user_data);

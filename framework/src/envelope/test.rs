@@ -1,6 +1,10 @@
 use super::*;
 use crate::{Handler, publish};
 
+const _: () = const { assert!(mem::size_of::<SyncEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
+const _: () = const { assert!(mem::size_of::<ArcEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
+const _: () = const { assert!(mem::size_of::<CopyEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
+
 fn helper<S, T>(s: &mut S, t: impl ThreadLocalEnvelope<T>) {
     s.handle(&mut (), &t);
     // alloc_envelope ensures the value is dropped so that the tests do not fail miri

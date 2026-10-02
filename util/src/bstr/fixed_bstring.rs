@@ -4,17 +4,19 @@
 
 use std::fmt::Write;
 
-use zerocopy::*;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 #[repr(transparent)]
 #[derive(IntoBytes, FromBytes, KnownLayout, Immutable, Unaligned, Clone, Copy, Eq)]
 pub struct FixedString<const N: usize, const E: u8 = 0>([u8; N]);
 
 impl<const N: usize, const E: u8> FixedString<N, E> {
+    #[must_use]
     pub const fn new() -> Self {
         Self([E; N])
     }
 
+    #[must_use]
     pub fn from_truncated(mut s: &str) -> Self {
         if s.len() > N {
             s = &s[..N];
@@ -140,7 +142,7 @@ where
 }
 
 impl<const N: usize, const E: u8> core::cmp::Ord for FixedString<N, E> {
-    fn cmp(&self, other: &FixedString<N, E>) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.bytes().cmp(other.bytes())
     }
 }

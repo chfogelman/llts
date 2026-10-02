@@ -18,6 +18,7 @@ pub struct Queue<T> {
 }
 
 impl<T> Queue<T> {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             buf:  Buffer::new(),
@@ -26,8 +27,9 @@ impl<T> Queue<T> {
         }
     }
 
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
-        let cap = if capacity == 0 || capacity.count_ones() == 1 {
+        let cap = if capacity == 0 || capacity.is_power_of_two() {
             capacity
         } else {
             1 << (capacity.ilog2() + 1)
@@ -39,36 +41,49 @@ impl<T> Queue<T> {
         }
     }
 
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.buf.capacity()
     }
 
+    #[must_use]
     fn mask(&self) -> usize {
-        debug_assert_eq!(self.capacity().count_ones(), 1);
+        debug_assert_eq!(self.capacity().count_ones(), 1, "Invariant violation, capacity must be a power of 2");
         self.capacity() - 1
     }
 
+    /// Return the number of items currently in the queue
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len.get()
     }
 
+    /// Return true if the queue does not have any elements
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Push an item to the queue, reallocating if necessary
     pub fn push(&self, elem: T) {
+        self.realloc_for_push();
         unsafe {
-            self.realloc_for_push();
+            // SAFETY: We have just realloc'ed
             self.push_unchecked(elem);
         }
     }
 
+    /// Push an item to the queue if there's available capacity
+    ///
+    /// # Errors
+    /// Returns the item if the queue is full
     pub fn try_push(&self, elem: T) -> Result<(), T> {
         if self.len() == self.capacity() {
             Err(elem)
         } else {
             unsafe {
-                // SAFETY: There is guaranteed to be enough space in the queue to push here.
+                // SAFETY: There is guaranteed to be enough space in the queue to push in this
+                // branch.
                 self.push_unchecked(elem);
             }
             Ok(())
@@ -91,9 +106,18 @@ impl<T> Queue<T> {
         }
     }
 
-    pub fn pop_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<T> {
-        // SAFETY: As long as the queue is not empty, it is safe to inspect the head
-        if !self.is_empty() && unsafe { pred(self.buf.get_unchecked_ref(self.head.get())) } {
+    /// Inspect the head of the queue and pop it if `pred` returns `true`
+    ///
+    /// # Safety
+    /// The predicate must not perform any modifying operations on the queue while holding a
+    /// reference
+    pub unsafe fn pop_if(&self, pred: impl FnOnce(&T) -> bool) -> Option<T> {
+        if !self.is_empty()
+            && unsafe {
+                // SAFETY: As long as the queue is not empty, it is safe to inspect the head
+                pred(self.buf.get_unchecked_ref(self.head.get()))
+            }
+        {
             self.pop()
         } else {
             None
@@ -116,19 +140,19 @@ impl<T> Queue<T> {
             unsafe {
                 // SAFETY: because this element is between `head` and `head + len`, we are
                 // guaranteed that it is initialized and can be dropped.
-                std::ptr::drop_in_place(self.buf.get_unchecked_mut(offset))
+                std::ptr::drop_in_place(self.buf.get_unchecked_mut(offset));
             }
         }
-        self.len.set(0)
+        self.len.set(0);
     }
 
-    unsafe fn realloc_for_push(&self) {
+    fn realloc_for_push(&self) {
         debug_assert!(self.len() <= self.capacity(), "Invariant violation: length should not exceed capacity");
         if self.len() < self.capacity() {
             return;
         }
         let new_capacity = if self.capacity() > 0 {
-            debug_assert!(self.capacity().count_ones() == 1);
+            debug_assert!(self.capacity().is_power_of_two(), "Invariant violation: capacity must be a power of 2");
             2 * self.capacity()
         } else {
             1
@@ -138,7 +162,7 @@ impl<T> Queue<T> {
             unsafe {
                 // SAFETY: we have just constructed `other` with a capacity larger than
                 // `self`'s.
-                other.push_unchecked(elem)
+                other.push_unchecked(elem);
             }
         }
         self.swap(&other);
@@ -149,9 +173,13 @@ impl<T> Queue<T> {
     /// Precondition: the queue must have an allocated buffer whose capacity is smaller than the
     /// current number of stored elements.
     unsafe fn push_unchecked(&self, elem: T) {
-        debug_assert!(self.len() < self.capacity());
+        debug_assert!(
+            self.len() < self.capacity(),
+            "Invariant violation, length must be smaller than capacity before push"
+        );
         let offset = (self.head.get() + self.len()) & self.mask();
         unsafe {
+            // SAFETY: inside unsafe fn
             self.buf.get_unchecked_raw(offset).write(MaybeUninit::new(elem));
         }
         self.len.set(self.len.get() + 1);
@@ -170,7 +198,9 @@ impl<T: Clone> Clone for Queue<T> {
         for i in self.head.get()..(self.head.get() + self.len()) {
             let offset = i & self.mask();
             unsafe {
+                // SAFETY: we do not modify the source here
                 let cloned = self.buf.get_unchecked_ref(offset).clone();
+                // SAFETY: the destination has been alloc'ed
                 new_q.push_unchecked(cloned);
             };
         }
@@ -180,7 +210,7 @@ impl<T: Clone> Clone for Queue<T> {
 
 impl<T> Drop for Queue<T> {
     fn drop(&mut self) {
-        self.clear()
+        self.clear();
     }
 }
 
@@ -189,7 +219,7 @@ impl<T> FromIterator<T> for Queue<T> {
         let iter = iter.into_iter();
         let q = Self::with_capacity(iter.size_hint().1.unwrap_or(0));
         for item in iter {
-            q.push(item)
+            q.push(item);
         }
         q
     }
@@ -209,7 +239,7 @@ impl<T> FusedIterator for Iter<T> {}
 
 pub struct Drain<'a, T>(&'a Queue<T>);
 
-impl<'a, T> Iterator for Drain<'a, T> {
+impl<T> Iterator for Drain<'_, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -217,13 +247,13 @@ impl<'a, T> Iterator for Drain<'a, T> {
     }
 }
 
-impl<'a, T> Drop for Drain<'a, T> {
+impl<T> Drop for Drain<'_, T> {
     fn drop(&mut self) {
-        self.0.clear()
+        self.0.clear();
     }
 }
 
-impl<'a, T> FusedIterator for Drain<'a, T> {}
+impl<T> FusedIterator for Drain<'_, T> {}
 
 impl<T> IntoIterator for Queue<T> {
     type Item = T;

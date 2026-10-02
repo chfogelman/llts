@@ -60,7 +60,7 @@ unsafe impl<T: Copy> Sync for Block<T> {}
 
 impl<T> Default for Block<T> {
     fn default() -> Self {
-        Block {
+        Self {
             seqno: AtomicU64::new(0),
             #[cfg(not(miri))]
             val: UnsafeCell::new(MaybeUninit::uninit()),
@@ -85,7 +85,7 @@ impl<T> Clone for QueueBuf<T> {
 impl<T> QueueBuf<T> {
     fn new(capacity: usize) -> Self {
         assert!(capacity > 1, "Broadcast queue capacity must be greater than 1");
-        assert!(capacity.count_ones() == 1, "Broadcast queue capacity must be a power of 2");
+        assert!(capacity.is_power_of_two(), "Broadcast queue capacity must be a power of 2");
 
         // HACK: We must allocate an additional block at the end,
         // whose `seqno` is abused to provide the block count
@@ -93,8 +93,11 @@ impl<T> QueueBuf<T> {
         for val in Arc::get_mut(&mut storage).expect("Cannot have been cloned") {
             val.write(Block::default());
         }
-        let storage = unsafe { storage.assume_init() };
-        QueueBuf { storage }
+        let storage = unsafe {
+            // SAFETY: we have just written the blocks above
+            storage.assume_init()
+        };
+        Self { storage }
     }
 
     fn len(&self) -> usize {
@@ -102,7 +105,10 @@ impl<T> QueueBuf<T> {
     }
 
     fn get(&self, position: usize) -> &Block<T> {
-        debug_assert!((position & (self.len() - 1)) < self.len());
+        debug_assert!(
+            (position & (self.len() - 1)) < self.len(),
+            "Invariant violation, length may not be power of 2"
+        );
         unsafe {
             // SAFETY: We have asserted on construction that the buffer was not constructed with
             // capacity 0.
@@ -111,8 +117,8 @@ impl<T> QueueBuf<T> {
     }
 
     /// This is how many blocks the writer has written. Some invariants:
-    /// write_count() % len() is the next position the writer will write to.
-    /// write_count() * 2 is the sequence number of the previously written block, if any
+    /// `write_count() % len()` is the next position the writer will write to.
+    /// `write_count() * 2` is the sequence number of the previously written block, if any
     /// A receiver can use these properties to catch up with the sender if it falls behind.
     fn write_count(&self) -> &AtomicU64 {
         // HACK: an extra block in the storage array is (ab)used to hold the block count.
@@ -157,11 +163,11 @@ impl<T: Copy> Sender<T> {
         #[cfg(miri)]
         block.val.lock().expect("wtf how lol").write(val);
 
-        // SAFETY: technically, none. write_volatile is not atomic. However, seqlock semantics
-        // ensure that the reader never treats torn reads as valid.
         #[cfg(not(miri))]
         unsafe {
-            std::ptr::write_volatile(block.val.get() as *mut _, MaybeUninit::new(val));
+            // SAFETY: technically, none. write_volatile is not atomic. However, seqlock semantics
+            // ensure that the reader never treats torn reads as valid.
+            std::ptr::write_volatile(block.val.get().cast(), MaybeUninit::new(val));
         }
         block.seqno.store(position * 2 + 2, Ordering::Release);
         self.queue.write_count().store(position + 1, Ordering::Relaxed);
@@ -223,10 +229,8 @@ impl<T: Copy> Receiver<T> {
             while our_seqno > block.seqno.load(Ordering::Relaxed) {
                 std::hint::spin_loop();
             }
-        } else {
-            if our_seqno > block.seqno.load(Ordering::Relaxed) {
-                return None;
-            }
+        } else if our_seqno > block.seqno.load(Ordering::Relaxed) {
+            return None;
         }
 
         loop {
@@ -237,10 +241,12 @@ impl<T: Copy> Receiver<T> {
             #[cfg(miri)]
             let maybe_val = block.val.lock().expect("wtf how actually");
 
-            // SAFETY: Technically, none. read_volatile is not atomic. However, seqlock semantics
-            // ensure that we will not call .assume_init() on torn values.
             #[cfg(not(miri))]
-            let maybe_val = unsafe { std::ptr::read_volatile(block.val.get()) };
+            let maybe_val = unsafe {
+                // SAFETY: Technically, none. read_volatile is not atomic. However, seqlock semantics
+                // ensure that we will not call .assume_init() on torn values.
+                std::ptr::read_volatile(block.val.get())
+            };
             atomic::fence(Ordering::Acquire);
 
             let seqno2 = block.seqno.load(Ordering::Relaxed);
@@ -288,7 +294,7 @@ impl<T: Copy> Receiver<T> {
 /// // Thread 2
 /// assert_eq!(rx2.recv().unwrap(), 42);
 ///
-#[must_use]
+#[must_use = "Returned channel must be used"]
 pub fn channel<T>(capacity: usize) -> Result<(Sender<T>, Receiver<T>), CapacityError> {
     if capacity <= 1 || capacity.count_ones() != 1 {
         Err(CapacityError(capacity))

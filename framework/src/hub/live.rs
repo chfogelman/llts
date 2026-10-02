@@ -30,7 +30,7 @@ impl<P: Pipeline> Hub for LiveHub<P> {
     fn poll(&self, pipeline: &mut Self::Pipeline) {
         self.timer_manager.poll(pipeline);
         for pollable in self.pollables.borrow().iter() {
-            pollable.poll(pipeline).unwrap() // FIXME
+            pollable.poll(pipeline).expect("Encountered unexpected pollable error") // FIXME
         }
     }
 

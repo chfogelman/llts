@@ -16,26 +16,31 @@ impl<const N: usize, Dst, R> TypeErasedFn<N, Dst, R> {
     /// Note that this function consumes the closure, but does not inherently drop it. The owned
     /// fields of the closure will _only_ be dropped when [`TypeErasedFn::call`] is invoked.
     ///
-    /// Panics if the function is larger than the available buffer size.
+    /// # Panics
+    /// If the function is larger than the available buffer size.
     pub fn new<F: FnOnce(&mut Dst) -> R>(f: F) -> Self {
+        unsafe fn dispatcher<F: FnOnce(&mut Dst) -> R, Dst, R>(buf: *const (), dst: &mut Dst) -> R {
+            let f = unsafe {
+                // SAFETY: We are assured here that we're calling the dispatch function on the correct buffer
+                std::ptr::read_unaligned(buf.cast::<F>())
+            };
+            f(dst)
+        }
+
         assert!(
             std::mem::size_of::<F>() <= N,
             "Function {} is larger than {} bytes",
             std::any::type_name::<F>(),
             N
         );
-        unsafe fn dispatcher<F: FnOnce(&mut Dst) -> R, Dst, R>(buf: *const (), dst: &mut Dst) -> R {
-            let f = unsafe { std::ptr::read_unaligned(buf as *const F) };
-            f(dst)
-        }
         let buf = unsafe {
-            // SAFETY: The assert at the top guarantees that `f` is no larger than the provided
+            // SAFETY: The assert above guarantees that `f` is no larger than the provided
             // buffer.
             let mut buf = [MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut F, f);
+            core::ptr::write_unaligned(buf.as_mut_ptr().cast::<F>(), f);
             buf
         };
-        TypeErasedFn {
+        Self {
             buf,
             dispatch_fn: dispatcher::<F, Dst, R>,
             _pd: PhantomData,
@@ -53,7 +58,7 @@ impl<const N: usize, Dst, R> TypeErasedFn<N, Dst, R> {
         } = self;
         unsafe {
             // SAFETY: We are assured here that we're calling the dispatch function on the correct buffer
-            dispatch_fn(buf.as_ptr() as *const (), dst)
+            dispatch_fn(buf.as_ptr().cast::<()>(), dst)
         }
     }
 }
@@ -73,26 +78,32 @@ impl<const N: usize, Dst, R> TypeErasedSendFn<N, Dst, R> {
     /// Note that this function consumes the closure, but does not inherently drop it. The owned
     /// fields of the closure will _only_ be dropped when [`TypeErasedFn::call`] is invoked.
     ///
-    /// Panics if the function is larger than the available buffer size.
+    /// # Panics
+    /// If the function is larger than the available buffer size.
     pub fn new<F: FnOnce(&mut Dst) -> R + Send>(f: F) -> Self {
+        unsafe fn dispatcher<F: FnOnce(&mut Dst) -> R, Dst, R>(buf: *const (), dst: &mut Dst) -> R {
+            let f = unsafe {
+                // SAFETY: We are assured that we're reading the correct type, by construction
+                // below
+                std::ptr::read_unaligned(buf.cast::<F>())
+            };
+            f(dst)
+        }
+
         assert!(
             std::mem::size_of::<F>() <= N,
             "Function {} is larger than {} bytes",
             std::any::type_name::<F>(),
             N
         );
-        unsafe fn dispatcher<F: FnOnce(&mut Dst) -> R, Dst, R>(buf: *const (), dst: &mut Dst) -> R {
-            let f = unsafe { std::ptr::read_unaligned(buf as *const F) };
-            f(dst)
-        }
         let buf = unsafe {
-            // SAFETY: The assert at the top guarantees that `f` is no larger than the provided
+            // SAFETY: The assert above guarantees that `f` is no larger than the provided
             // buffer.
             let mut buf = [MaybeUninit::uninit(); _];
-            core::ptr::write_unaligned(buf.as_mut_ptr() as *mut F, f);
+            core::ptr::write_unaligned(buf.as_mut_ptr().cast::<F>(), f);
             buf
         };
-        TypeErasedSendFn {
+        Self {
             buf,
             dispatch_fn: dispatcher::<F, Dst, R>,
             _pd: PhantomData,
@@ -110,7 +121,7 @@ impl<const N: usize, Dst, R> TypeErasedSendFn<N, Dst, R> {
         } = self;
         unsafe {
             // SAFETY: We are assured here that we're calling the dispatch function on the correct buffer
-            dispatch_fn(buf.as_ptr() as *const (), dst)
+            dispatch_fn(buf.as_ptr().cast::<()>(), dst)
         }
     }
 }

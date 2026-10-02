@@ -1,4 +1,4 @@
-use zerocopy::*;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 macro_rules! make_fixed_point { ($($name:ident, $int:ty)+) => {$(
 

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use libmd::book::Book;
 use nasdaq::binfile;
 use nasdaq::book::BookBuilder;
@@ -11,7 +13,7 @@ impl<Traits: libmd::MdTraits> libmd::L1Handler<Traits> for Printer {
         user_data.1 += 1;
         let top = book.get_top();
         if let Some(top) = top {
-            assert!(top.bid_price < top.ask_price);
+            assert!(top.bid_price < top.ask_price, "Crossed or locked book");
             if user_data.1 % 10_000 == 0 {
                 println!(
                     "Quote ${},{} | ${},{} for {}",

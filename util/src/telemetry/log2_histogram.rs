@@ -1,3 +1,6 @@
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+
 #[derive(Clone, Copy, Debug)]
 pub struct Bin {
     pub count: u64,
@@ -30,6 +33,7 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
     const RANGE_SIZE: u64 = 1u64 << Self::PRECISION_BITS;
     const MASK: u64 = Self::RANGE_SIZE - 1;
 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             count:        0,
@@ -42,7 +46,7 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
 
     /// Adds `val` to the histogram state and returns the corresponding bin.
     ///
-    /// If the value is above MAX_VALUE, uses the histogram's overflow bin
+    /// If the value is above `MAX_VALUE`, uses the histogram's overflow bin
     pub fn add(&mut self, val: u64) -> Result<&Bin, &Bin> {
         let update_bin = |bin: &mut Bin| {
             bin.count += 1;
@@ -73,6 +77,7 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
     }
 
     /// Computes percentiles. Inputs must be floating-point values between 0 and 1.
+    #[must_use]
     pub fn compute_percentiles<const N: usize>(&self, pcts: &[f64; N]) -> [u64; N] {
         assert!(N > 0, "Must provide percentiles");
         assert!(pcts.is_sorted(), "Desired percentiles must be provided in sorted order!");
@@ -105,14 +110,17 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
         vals
     }
 
+    #[must_use]
     pub fn mean(&self) -> f64 {
         self.sum as f64 / self.count as f64
     }
 
+    #[must_use]
     pub fn var(&self) -> f64 {
         ((self.sum_sq) / self.count as f64) - self.mean() * self.mean()
     }
 
+    #[must_use]
     pub fn std(&self) -> f64 {
         self.var().sqrt()
     }
@@ -121,8 +129,8 @@ impl<const BINS: usize, const MAX_VALUE: u64> Log2Histogram<BINS, MAX_VALUE> {
         if val <= Self::RANGE_SIZE {
             Some(val as usize)
         } else {
-            let bits = val.ilog2() as u64;
-            let shift = bits.saturating_sub(Self::PRECISION_BITS as u64);
+            let bits = u64::from(val.ilog2());
+            let shift = bits.saturating_sub(u64::from(Self::PRECISION_BITS));
             let offset = (val >> shift) & Self::MASK;
             let bin = (offset + ((shift + 1) << Self::PRECISION_BITS)) as usize;
             if bin < BINS { Some(bin) } else { None }

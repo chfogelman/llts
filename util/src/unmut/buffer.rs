@@ -51,9 +51,12 @@ impl<T> Buffer<T> {
     ///
     /// Preconditions: the buffer must be allocated and smaller than the offset
     pub unsafe fn get_unchecked_raw(&self, idx: usize) -> *mut MaybeUninit<T> {
-        debug_assert!(self.buf.get().is_some());
-        debug_assert!(idx < self.capacity());
-        unsafe { self.buf.get().unwrap_unchecked().add(idx).as_ref().get() }
+        debug_assert!(self.buf.get().is_some(), "get_unchecked_raw called before allocation");
+        debug_assert!(idx < self.capacity(), "get_unchecked_raw called for index beyond capacity");
+        unsafe {
+            // SAFETY: inside an unsafe fn
+            self.buf.get().unwrap_unchecked().add(idx).as_ref().get()
+        }
     }
 
     /// Get a mutable reference to the _initialized_ element at `offset` from the start of the
@@ -63,7 +66,10 @@ impl<T> Buffer<T> {
     /// the offset must be initialized, and there must be no other live references to the element
     pub unsafe fn get_unchecked_mut(&self, idx: usize) -> &mut T {
         #![allow(clippy::mut_from_ref)]
-        unsafe { self.get_unchecked_raw(idx).as_mut_unchecked().assume_init_mut() }
+        unsafe {
+            // SAFETY: inside an unsafe fn
+            self.get_unchecked_raw(idx).as_mut_unchecked().assume_init_mut()
+        }
     }
 
     /// Get a mutable reference to the _initialized_ element at `offset` from the start of the
@@ -73,7 +79,10 @@ impl<T> Buffer<T> {
     /// the offset must be initialized, and there must be no other live mutable references to the
     /// element
     pub unsafe fn get_unchecked_ref(&self, idx: usize) -> &T {
-        unsafe { self.get_unchecked_raw(idx).as_mut_unchecked().assume_init_ref() }
+        unsafe {
+            // SAFETY: inside an unsafe fn
+            self.get_unchecked_raw(idx).as_mut_unchecked().assume_init_ref()
+        }
     }
 }
 
@@ -81,6 +90,7 @@ impl<T> Drop for Buffer<T> {
     fn drop(&mut self) {
         if let Some(buf) = self.buf.get() {
             unsafe {
+                // SAFETY: inside an unsafe fn
                 let slc = std::slice::from_raw_parts_mut(buf.as_ptr(), self.cap.get());
                 std::mem::drop(Box::from_raw(slc));
             }

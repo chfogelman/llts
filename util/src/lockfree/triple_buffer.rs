@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut, Drop};
-use std::sync::atomic::*;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::align::CacheLineAligned;
 
@@ -25,7 +25,7 @@ impl<T: Clone> TripleBuffer<T> {
             is_acquired: false.into(),
             flagged_idx: 0.into(),
         };
-        TripleBuffer {
+        Self {
             state: CacheLineAligned(state),
             slots: [init.clone(), init.clone(), init].map(|x| CacheLineAligned(UnsafeCell::new(x))),
         }
@@ -60,14 +60,21 @@ impl<T, P: Deref<Target = TripleBuffer<T>>> Reader<P> {
         let flagged_idx = self.tb.state.flagged_idx.load(Ordering::Acquire);
         let (idx, flag) = if flagged_idx & DIRTY_MASK != 0 {
             let next = self.tb.state.flagged_idx.swap(self.current, Ordering::AcqRel) & INDEX_MASK;
-            debug_assert_ne!(self.current, next);
+            debug_assert_ne!(self.current, next, "Invariant violation: current and next indexes are equal");
             self.current = next;
             (next, true)
         } else {
-            debug_assert_ne!(self.current, flagged_idx & INDEX_MASK);
+            debug_assert_ne!(
+                self.current,
+                flagged_idx & INDEX_MASK,
+                "Invariant violation: received clean index equal to current"
+            );
             (self.current, false)
         };
-        unsafe { (&*self.tb.slots[idx as usize].get(), flag) }
+        unsafe {
+            // SAFETY: We have just acquired an exclusive index to read from
+            (&*self.tb.slots[idx as usize].get(), flag)
+        }
     }
 }
 
@@ -82,12 +89,12 @@ pub struct WriterHandle<'a, T> {
     spare:  &'a mut u8,
 }
 
-impl<'a, T> WriterHandle<'a, T> {
-    /// Explicitly drops this WriterHandle
+impl<T> WriterHandle<'_, T> {
+    /// Explicitly drops this `WriterHandle`
     pub fn commit(self) {}
 }
 
-impl<'a, T> Deref for WriterHandle<'a, T> {
+impl<T> Deref for WriterHandle<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -95,13 +102,13 @@ impl<'a, T> Deref for WriterHandle<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for WriterHandle<'a, T> {
+impl<T> DerefMut for WriterHandle<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.val
     }
 }
 
-impl<'a, T> Drop for WriterHandle<'a, T> {
+impl<T> Drop for WriterHandle<'_, T> {
     fn drop(&mut self) {
         // Set dirty flag
         *self.spare = self.latest.swap(*self.spare | 0b100, Ordering::AcqRel) & 0b11;
@@ -110,7 +117,10 @@ impl<'a, T> Drop for WriterHandle<'a, T> {
 
 impl<T, P: Deref<Target = TripleBuffer<T>>> Writer<P> {
     pub fn get_mut(&mut self) -> WriterHandle<'_, T> {
-        let val = unsafe { &mut *self.tb.slots[self.spare as usize].get() };
+        let val = unsafe {
+            // SAFETY: the spare slot belongs to the writer
+            &mut *self.tb.slots[self.spare as usize].get()
+        };
         WriterHandle {
             val,
             latest: &self.tb.state.flagged_idx,
@@ -121,9 +131,7 @@ impl<T, P: Deref<Target = TripleBuffer<T>>> Writer<P> {
 
 pub fn new<T, P: Deref<Target = TripleBuffer<T>> + Clone>(tb_ptr: P) -> (Writer<P>, Reader<P>) {
     let acquired = tb_ptr.state.is_acquired.swap(true, Ordering::AcqRel);
-    if acquired {
-        panic!("Attempted to claim TripleBuffer instance with existing reader and writer");
-    }
+    assert!(!acquired, "Attempted to claim TripleBuffer instance with existing reader and writer");
     tb_ptr.state.flagged_idx.store(0, Ordering::Release);
     let writer = Writer {
         tb:    tb_ptr.clone(),

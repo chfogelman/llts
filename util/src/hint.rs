@@ -16,6 +16,7 @@ pub const fn cold_path() {}
 /// program as a whole, and thus should be used sparingly and only with benchmarks to prove
 /// benefit.
 #[inline]
+#[must_use]
 pub const fn likely(b: bool) -> bool {
     if !b {
         cold_path();
@@ -31,6 +32,7 @@ pub const fn likely(b: bool) -> bool {
 /// program as a whole, and thus should be used sparingly and only with benchmarks to prove
 /// benefit.
 #[inline]
+#[must_use]
 pub const fn unlikely(b: bool) -> bool {
     if b {
         cold_path();

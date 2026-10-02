@@ -1,3 +1,6 @@
+#![allow(clippy::missing_assert_message)]
+#![allow(clippy::unwrap_used)]
+
 use ::util::bstr::fixed_bstring::FixedString;
 use libmd::Side;
 use zerocopy::{network_endian as ne, *};

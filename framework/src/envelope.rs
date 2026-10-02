@@ -37,10 +37,6 @@ struct ArcEnvelope<'a, Msg: Send + Sync + 'static>(&'a mut mem::ManuallyDrop<Arc
 #[repr(transparent)]
 pub(crate) struct CopyEnvelope<'a, Msg: Copy + Send + 'static>(&'a Msg);
 
-const _: () = const { assert!(mem::size_of::<SyncEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
-const _: () = const { assert!(mem::size_of::<ArcEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
-const _: () = const { assert!(mem::size_of::<CopyEnvelope<[u8; 100]>>() == mem::size_of::<usize>()) };
-
 // These are the [`EnvelopeBuilder`] types that may contain an allocated [`Arc`] that will be
 // cloned when publishing to each other thread. These are only created after the contained message
 // has been published to each thread-local [`Handler`].
