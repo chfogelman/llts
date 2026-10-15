@@ -88,7 +88,11 @@ impl<Msg: Copy + Send + 'static> private::Sealed for CopyEnvelope<'_, Msg> {}
 pub trait ThreadLocalEnvelope<Msg>: private::Sealed {
     #[must_use]
     fn alloc_envelope(self) -> impl EnvelopeBuilder<Msg>;
+
     fn get(&self) -> &Msg;
+
+    /// This function must be called deliberately if you elect not to call [`Self::alloc_envelope`]
+    fn drop(this: Self);
 }
 
 impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<'_, Msg> {
@@ -99,6 +103,12 @@ impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for SyncEnvelope<'_, M
 
     fn get(&self) -> &Msg {
         self.0
+    }
+
+    fn drop(this: Self) {
+        // SAFETY: we taken ownership of the envelope and drop its referent. It can't be used
+        // again.
+        drop(unsafe { mem::ManuallyDrop::take(this.0) });
     }
 }
 
@@ -111,6 +121,12 @@ impl<Msg: Send + Sync + 'static> ThreadLocalEnvelope<Msg> for ArcEnvelope<'_, Ms
     fn get(&self) -> &Msg {
         self.0
     }
+
+    fn drop(this: Self) {
+        // SAFETY: we taken ownership of the envelope and drop its referent. It can't be used
+        // again.
+        drop(unsafe { mem::ManuallyDrop::take(this.0) });
+    }
 }
 
 impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<'_, Msg> {
@@ -120,6 +136,10 @@ impl<Msg: Copy + Send + 'static> ThreadLocalEnvelope<Msg> for CopyEnvelope<'_, M
 
     fn get(&self) -> &Msg {
         self.0
+    }
+
+    fn drop(_this: Self) {
+        // Nothing to do, `Copy` and `Drop` are mutually exclusive
     }
 }
 

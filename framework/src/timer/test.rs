@@ -1,9 +1,11 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::time::Duration;
 
 use super::*;
+use crate::resource_manager::ResourceManager;
 use crate::{Context, Hub, Pipeline};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -84,7 +86,7 @@ impl TimerTestDriver {
         self.hub.now.set(self.hub.now.get() + duration)
     }
 
-    fn poll(&mut self) {
+    fn poll(&mut self) -> ControlFlow<String> {
         self.hub.poll(&mut self.pipeline)
     }
 }
@@ -92,12 +94,12 @@ impl TimerTestDriver {
 impl Hub for TimerTestHub {
     type Pipeline = TimerTestPipeline;
 
-    fn poll(&self, pipeline: &mut Self::Pipeline) {
-        self.timers.poll(pipeline);
-    }
+    type LiveResourceManager = !;
+    type ReplayResourceManager = !;
 
-    fn register_pollable(&self, _pollable: Box<dyn crate::Pollable<Self::Pipeline>>) {
-        unimplemented!()
+    fn poll(&self, pipeline: &mut Self::Pipeline) -> ControlFlow<String> {
+        self.timers.poll(pipeline);
+        ControlFlow::Continue(())
     }
 
     fn defer<Msg>(&self, _msg: Msg) {
@@ -115,14 +117,18 @@ impl Hub for TimerTestHub {
     fn stop(&self, _reason: String) {
         unimplemented!()
     }
+
+    fn as_resource_manager(&self) -> ResourceManager<'_, Self> {
+        unimplemented!()
+    }
 }
 
 #[test]
 fn no_timer() {
     let mut driver = TimerTestDriver::new(SystemTime::UNIX_EPOCH);
-    driver.poll();
+    let _ = driver.poll();
     driver.advance(Duration::from_secs(5));
-    driver.poll();
+    let _ = driver.poll();
     driver.advance(Duration::from_secs(5));
     assert!(driver.pipeline.expected.is_empty());
 }
@@ -134,7 +140,7 @@ fn one_timer() {
     driver.pipeline.expected.push_back(TimerEvent(0));
 
     driver.advance(Duration::from_secs(5));
-    driver.poll();
+    let _ = driver.poll();
 
     assert!(driver.pipeline.expected.is_empty());
 }
@@ -148,11 +154,11 @@ fn two_timers() {
     driver.pipeline.expected.push_back(TimerEvent(1));
 
     driver.advance(Duration::from_secs(5));
-    driver.poll();
+    let _ = driver.poll();
     assert!(!driver.pipeline.expected.is_empty());
 
     driver.advance(Duration::from_secs(2));
-    driver.poll();
+    let _ = driver.poll();
     assert!(driver.pipeline.expected.is_empty());
 }
 
@@ -165,7 +171,7 @@ fn two_timers_one_poll() {
     driver.pipeline.expected.push_back(TimerEvent(1));
 
     driver.advance(Duration::from_secs(5));
-    driver.poll();
+    let _ = driver.poll();
     assert!(driver.pipeline.expected.is_empty());
 }
 
@@ -176,6 +182,6 @@ fn timer_exact() {
     driver.pipeline.expected.push_back(TimerEvent(0));
 
     driver.advance(Duration::from_secs(2));
-    driver.poll();
+    let _ = driver.poll();
     assert!(driver.pipeline.expected.is_empty());
 }

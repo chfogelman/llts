@@ -1,18 +1,30 @@
 #![feature(min_specialization)]
 
 pub mod container;
+pub mod driver;
 pub mod envelope;
-mod hub;
+pub mod hub;
 pub mod messages;
+pub mod resource_manager;
 mod thread_builder;
 mod timer;
 
+use std::ops::ControlFlow;
 use std::time::{Duration, SystemTime};
 
 use envelope::ThreadLocalEnvelope;
-pub use hub::Hub;
+use hub::Hub;
+pub use hub::replay::ReplayHub;
 pub use messages::*;
-pub use thread_builder::ThreadBuilder;
+use resource_manager::ResourceManager;
+
+pub mod prelude {
+    pub use super::container::Container;
+    pub use super::hub::Hub;
+    pub use super::resource_manager::{LiveResourceManager, ReplayResourceManager, ResourceManager};
+    pub use super::thread_builder::ThreadBuilder;
+    pub use super::{Context, Handler, Pipeline, Pollable, ReplaySource, chain_components, publish};
+}
 
 pub trait Context {
     type Hub: Hub;
@@ -24,9 +36,27 @@ pub trait Context {
     fn get_hub(&self) -> &Self::Hub;
 }
 
+impl Context for ! {
+    type Hub = !;
+
+    fn publish<Msg>(&mut self, _msg: impl ThreadLocalEnvelope<Msg>) {
+        unimplemented!()
+    }
+
+    fn get_hub(&self) -> &Self::Hub {
+        unimplemented!()
+    }
+}
+
 pub trait Pipeline: Context {
     /// Dispatch an input message onto this pipeline
     fn dispatch<Msg>(&mut self, msg: &Msg);
+}
+
+impl Pipeline for ! {
+    fn dispatch<Msg>(&mut self, _msg: &Msg) {
+        unimplemented!()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +74,12 @@ impl<T, P: Pipeline, F: Fn() -> Result<T, PollError>> Pollable<P> for PollableFn
         let _: () = target.dispatch(&v);
         Ok(())
     }
+}
+
+pub trait ReplaySource<Target: Pipeline> {
+    fn poll(&self, target: &mut Target) -> Result<SystemTime, PollError>;
+    fn peek(&self) -> Result<SystemTime, PollError>;
+    fn advance_to(&self, t: SystemTime) -> Result<SystemTime, PollError>;
 }
 
 #[macro_export]
@@ -94,11 +130,10 @@ impl Pipeline for () {
 impl Hub for () {
     type Pipeline = ();
 
-    fn poll(&self, _pipeline: &mut Self::Pipeline) {
-        unimplemented!()
-    }
+    type LiveResourceManager = !;
+    type ReplayResourceManager = !;
 
-    fn register_pollable(&self, _pollable: Box<dyn Pollable<Self::Pipeline>>) {
+    fn poll(&self, _pipeline: &mut Self::Pipeline) -> ControlFlow<String> {
         unimplemented!()
     }
 
@@ -115,6 +150,10 @@ impl Hub for () {
     }
 
     fn stop(&self, _reason: String) {
+        unimplemented!()
+    }
+
+    fn as_resource_manager(&self) -> ResourceManager<'_, Self> {
         unimplemented!()
     }
 }

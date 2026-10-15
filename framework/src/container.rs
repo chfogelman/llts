@@ -10,7 +10,7 @@ pub trait Container {
 
     fn with<H>(self, next: H) -> Self::With<H>;
 
-    type Finalized<P: Pipeline>: Pipeline;
+    type Finalized<P: Pipeline>: Pipeline<Hub = P::Hub>;
 
     fn finalize<P: Pipeline>(self, pipeline: P) -> Self::Finalized<P>;
 }

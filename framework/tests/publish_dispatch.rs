@@ -1,7 +1,9 @@
 #![feature(min_specialization)]
 use std::sync::Arc;
 
-use framework::{Context, Handler, Hub, PollableFn, StartEvent, ThreadBuilder, chain_components, publish};
+use framework::PollableFn;
+use framework::messages::StartEvent;
+use framework::prelude::*;
 
 struct PollEvent;
 
@@ -9,7 +11,9 @@ struct ThreadTheFirst;
 
 impl Handler<StartEvent> for ThreadTheFirst {
     fn handle(&mut self, ctx: &mut impl Context, _: &StartEvent) {
-        ctx.get_hub().register_pollable(Box::new(PollableFn(|| Ok(PollEvent))))
+        if let ResourceManager::Live(mgr) = ctx.get_hub().as_resource_manager() {
+            mgr.register_pollable(Box::new(PollableFn(|| Ok(PollEvent))))
+        }
     }
 }
 

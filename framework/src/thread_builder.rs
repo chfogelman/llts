@@ -1,12 +1,15 @@
+use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::SystemTime;
 
 use crate::container::Container;
+use crate::driver::PipelineFinalizer;
 use crate::envelope::{Envelope, EnvelopeBuilder};
 use crate::hub::live::LiveHub;
-use crate::{Context, Hub, Pipeline, Pollable, StartEvent, ThreadLocalEnvelope};
+use crate::resource_manager::{LiveResourceManager, ResourceManager};
+use crate::{Hub, Pipeline, Pollable, ThreadLocalEnvelope};
 
 pub struct Disconnected;
 
@@ -24,12 +27,17 @@ where
 {
     type Pipeline = T::Pipeline;
 
-    fn poll(&self, pipeline: &mut Self::Pipeline) {
-        self.hub_impl.poll(pipeline);
+    type LiveResourceManager = Self;
+    type ReplayResourceManager = !;
+
+    fn poll(&self, pipeline: &mut Self::Pipeline) -> ControlFlow<String> {
+        self.hub_impl.poll(pipeline)
     }
 
-    fn register_pollable(&self, pollable: Box<dyn Pollable<Self::Pipeline>>) {
-        self.hub_impl.register_pollable(pollable);
+    fn publish<Msg>(&self, msg: impl ThreadLocalEnvelope<Msg>) {
+        if self.senders.send(msg).is_err() {
+            self.stop("Sender disconnected".into());
+        }
     }
 
     fn defer<Msg>(&self, msg: Msg) {
@@ -47,33 +55,18 @@ where
     fn stop(&self, reason: String) {
         self.hub_impl.stop(reason);
     }
-}
 
-impl<T> Context for Rc<ThreadHub<T>>
-where
-    T: Thread,
-{
-    type Hub = ThreadHub<T>;
-
-    fn publish<Msg>(&mut self, msg: impl ThreadLocalEnvelope<Msg>) {
-        if self.senders.send(msg).is_err() {
-            self.stop("Sender disconnected".into());
-        }
-    }
-
-    fn get_hub(&self) -> &Self::Hub {
-        self
+    fn as_resource_manager(&self) -> ResourceManager<'_, Self> {
+        ResourceManager::Live(self)
     }
 }
 
-impl<T> Pipeline for Rc<ThreadHub<T>>
+impl<T> LiveResourceManager for ThreadHub<T>
 where
     T: Thread,
 {
-    fn dispatch<Msg>(&mut self, _msg: &Msg) {
-        // Intentionally blank.
-        // This is the end of the line for dispatching
-        // TODO: maybe this should be used to implement input event capture and sequencing?
+    fn register_pollable(&self, pollable: Box<dyn Pollable<Self::Pipeline>>) {
+        self.hub_impl.register_pollable(pollable);
     }
 }
 
@@ -98,17 +91,16 @@ where
             receiver,
             senders,
         } = self;
-        let thread_hub = Rc::new(ThreadHub::<Self> {
+        let thread_hub = ThreadHub::<Self> {
             senders,
             hub_impl: LiveHub::new(),
-        });
+        };
         thread_hub.register_pollable(Box::new(receiver));
-        let mut pipeline = container.finalize(Rc::clone(&thread_hub));
-
-        pipeline.dispatch(&StartEvent);
-        while !thread_hub.hub_impl.stop_requested() {
-            thread_hub.poll(&mut pipeline);
-        }
+        let thread_hub = Rc::new(thread_hub);
+        let pipeline = container.finalize(PipelineFinalizer {
+            hub: Rc::clone(&thread_hub),
+        });
+        crate::driver::run(pipeline, thread_hub);
     }
 }
 
@@ -156,7 +148,7 @@ where
     C: Container + Send,
     B: Bus,
 {
-    type Pipeline = C::Finalized<Rc<ThreadHub<Self>>>;
+    type Pipeline = C::Finalized<PipelineFinalizer<ThreadHub<Self>>>;
     type Sender = Sender<Envelope<Self::Pipeline>>;
     type Receiver = Receiver<Envelope<Self::Pipeline>>;
     type Channel = Channel<Self>;
