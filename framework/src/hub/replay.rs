@@ -64,8 +64,10 @@ impl<D: Driver> ReplayHub<D> {
 
 pub fn make_driver<C: Container>(container: C) -> impl Driver {
     struct DriverImpl<C: Container> {
-        hub:      Rc<ReplayHub<Self>>,
         pipeline: <Self as Driver>::Pipeline,
+        // The compiler freaks out if it can't prove that `pipeline` is Sized.
+        // Keep `hub` at the end of the struct. Beware E0275 if you do not heed this warning
+        hub:      Rc<ReplayHub<Self>>,
     }
 
     impl<C: Container> Driver for DriverImpl<C> {

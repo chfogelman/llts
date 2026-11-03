@@ -75,9 +75,11 @@ where
     C: Container + Send + 'static,
     Others: Bus + 'static,
 {
-    container: C,
     receiver:  <Self as Thread>::Receiver,
     senders:   <Self as Thread>::Senders,
+    // The compiler freaks out if it can't prove that `receiver` and `senders` are Sized.
+    // Keep `container` at the end of the struct. Beware E0275 if you do not heed this warning
+    container: C,
 }
 
 impl<C, B> ThreadImpl<C, B>
