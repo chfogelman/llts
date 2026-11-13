@@ -34,8 +34,8 @@ impl<T: Clone> TripleBuffer<T> {
 
 // SAFETY: We guarantee soundness via the typical triple-buffering scheme.
 // The reader controls one buffer, and the writer controls two.
-// When the reader wants a new value, it swaps
-unsafe impl<T> Sync for TripleBuffer<T> {}
+// When the reader wants a new value, it swaps.
+unsafe impl<T: Send> Sync for TripleBuffer<T> {}
 
 pub struct Reader<P> {
     tb:      P,

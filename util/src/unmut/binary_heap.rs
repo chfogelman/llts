@@ -108,7 +108,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// # Errors
     /// Returns the item if the heap is full
     pub fn try_push(&self, item: T) -> Result<(), T> {
-        if self.len() == self.capacity() {
+        if self.len() != self.capacity() {
             self.push(item);
             Ok(())
         } else {
@@ -177,9 +177,9 @@ impl<T: Ord> BinaryHeap<T> {
         unsafe {
             // SAFETY: idx != 0 implies idx / 2 != idx. Thus they do not overlap, and it is safe to
             // take references to them within the bounds of this loop.
-            while idx > 0 && self.buf.get_unchecked_ref(idx / 2) < self.buf.get_unchecked_ref(idx) {
-                std::mem::swap(self.buf.get_unchecked_mut(idx / 2), self.buf.get_unchecked_mut(idx));
-                idx /= 2;
+            while idx > 0 && self.buf.get_unchecked_ref((idx - 1) / 2) < self.buf.get_unchecked_ref(idx) {
+                std::mem::swap(self.buf.get_unchecked_mut((idx - 1) / 2), self.buf.get_unchecked_mut(idx));
+                idx = (idx - 1) / 2;
             }
         }
     }

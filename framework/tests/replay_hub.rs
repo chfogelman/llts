@@ -40,12 +40,12 @@ impl<P: Pipeline> ReplaySource<P> for TestReplaySource {
     }
 
     fn advance_to(&self, t: SystemTime) -> Result<SystemTime, PollError> {
-        while let Some(front) = self.0.borrow_mut().front() {
-            if front.0 > t {
-                return Ok(front.0);
-            }
+        while let Some(_) = self.0.borrow_mut().pop_front_if(|x| x.0 < t) {}
+        if let Some(front) = self.0.borrow().front() {
+            Ok(front.0)
+        } else {
+            Err(PollError)
         }
-        Err(PollError)
     }
 }
 

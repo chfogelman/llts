@@ -51,7 +51,7 @@ impl<P> TimerManager<P> {
 }
 
 impl<P: Pipeline> TimerManager<P> {
-    pub fn start_timer<Payload: Copy>(&self, payload: Payload, expiration: SystemTime) {
+    pub fn start_timer<Payload: Copy + 'static>(&self, payload: Payload, expiration: SystemTime) {
         util::const_assert_sizeof!(Payload, <=, PAYLOAD_SIZE, "Timer payload must be at most 16 bytes");
         let timer = Timer {
             expiration,

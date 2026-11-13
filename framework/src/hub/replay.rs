@@ -122,7 +122,7 @@ impl<D: Driver> Hub for ReplayHub<D> {
         self.clock_now.get()
     }
 
-    fn start_timer<Event: Copy>(&self, event: Event, duration: Duration) {
+    fn start_timer<Event: Copy + 'static>(&self, event: Event, duration: Duration) {
         self.timer_manager.start_timer(event, self.now() + duration);
     }
 

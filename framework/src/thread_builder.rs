@@ -48,7 +48,7 @@ where
         self.hub_impl.now()
     }
 
-    fn start_timer<Event: Copy>(&self, event: Event, duration: std::time::Duration) {
+    fn start_timer<Event: Copy + 'static>(&self, event: Event, duration: std::time::Duration) {
         self.hub_impl.start_timer(event, duration);
     }
 
@@ -87,7 +87,7 @@ where
     C: Container + Send,
     B: Bus,
 {
-    fn start_event_loop(self) {
+    fn start_event_loop(self) -> String {
         let Self {
             container,
             receiver,
@@ -102,14 +102,14 @@ where
         let pipeline = container.finalize(PipelineFinalizer {
             hub: Rc::clone(&thread_hub),
         });
-        crate::driver::run(pipeline, thread_hub);
+        crate::driver::run(pipeline, thread_hub)
     }
 }
 
 pub trait ThreadBuilder {
     type Threads;
 
-    fn start_threads(self) -> Vec<thread::Result<()>>;
+    fn start_threads(self) -> Vec<thread::Result<String>>;
 }
 
 pub trait Bus {
@@ -142,7 +142,7 @@ pub trait Thread {
     fn spawn<'scope, 'env: 'scope>(
         self,
         scope: &'scope thread::Scope<'scope, 'env>,
-    ) -> thread::ScopedJoinHandle<'scope, ()>;
+    ) -> thread::ScopedJoinHandle<'scope, String>;
 }
 
 impl<C, B> Thread for ThreadImpl<C, B>
@@ -163,11 +163,9 @@ where
     fn spawn<'scope, 'env: 'scope>(
         self,
         scope: &'scope thread::Scope<'scope, 'env>,
-    ) -> thread::ScopedJoinHandle<'scope, ()> {
+    ) -> thread::ScopedJoinHandle<'scope, String> {
         let thread_impl = self;
-        scope.spawn(move || {
-            thread_impl.start_event_loop();
-        })
+        scope.spawn(move || thread_impl.start_event_loop())
     }
 }
 
@@ -196,8 +194,8 @@ macro_rules! impl_senders_for_handles {
                 let msg = msg.alloc_envelope();
                 let ($($ts,)+) = self;
                 let successful = [$(
-                    $ts.send(msg.build_envelope()).is_err(),
-                )+].into_iter().any(|b| b);
+                    $ts.send(msg.build_envelope()).is_ok(),
+                )+].into_iter().all(|b| b);
                 if successful {
                     Ok(())
                 } else {
@@ -265,7 +263,7 @@ macro_rules! impl_thread_builder {
             type Threads = thread_builder_threads_type!((), ($($ts,)+), ());
 
             #[allow(non_snake_case)]
-            fn start_threads(self) -> Vec<thread::Result<()>> {
+            fn start_threads(self) -> Vec<thread::Result<String>> {
                 let channels = <Self::Threads as ChannelBuilder>::get_channels();
                 let channels = channels.transpose();
                 let channels = ChannelArranger::arrange(channels);

@@ -39,7 +39,7 @@ pub trait Hub: Sized {
     /// Start a timer which will expire after `duration`.
     /// The `event` argument carries a payload that will be looped back into the pipeline when the
     /// timer expires.
-    fn start_timer<Event: Copy>(&self, event: Event, duration: Duration);
+    fn start_timer<Event: Copy + 'static>(&self, event: Event, duration: Duration);
 
     /// Request graceful shutdown of the thread or process
     fn stop(&self, reason: String);

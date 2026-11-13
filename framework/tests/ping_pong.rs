@@ -31,7 +31,7 @@ impl Handler<Pong> for Pinger {
     fn handle(&mut self, ctx: &mut impl Context, msg: &Pong) {
         println!("Received Pong with count {} on {:?}", msg.count, std::thread::current().id());
         if msg.count > 10 {
-            ctx.get_hub().stop("Done".into())
+            ctx.get_hub().stop("Received at least 10 Pongs".into())
         }
     }
 }
@@ -54,16 +54,9 @@ impl Handler<Ping> for Ponger {
 
 #[test]
 fn ping_pong() {
-    std::panic::set_hook(Box::new(|payload| {
-        if let Some(location) = payload.location() {
-            eprintln!("{},{}", location.file(), location.line());
-        }
-        if let Some(s) = payload.payload_as_str() {
-            eprintln!("{}", s);
-        }
-        std::process::exit(-1)
-    }));
     let pinger = chain_components!(Pinger { count: 0 });
     let ponger = chain_components!(Ponger);
-    let _handles = ThreadBuilder::start_threads((pinger, ponger));
+    let handles = ThreadBuilder::start_threads((pinger, ponger));
+    let results = handles.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
+    assert!(results.contains(&"Received at least 10 Pongs".into()))
 }

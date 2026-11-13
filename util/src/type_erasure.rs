@@ -18,7 +18,7 @@ impl<const N: usize, Dst, R> TypeErasedFn<N, Dst, R> {
     ///
     /// # Panics
     /// If the function is larger than the available buffer size.
-    pub fn new<F: FnOnce(&mut Dst) -> R>(f: F) -> Self {
+    pub fn new<F: FnOnce(&mut Dst) -> R + 'static>(f: F) -> Self {
         unsafe fn dispatcher<F: FnOnce(&mut Dst) -> R, Dst, R>(buf: *const (), dst: &mut Dst) -> R {
             let f = unsafe {
                 // SAFETY: We are assured here that we're calling the dispatch function on the correct buffer
@@ -80,7 +80,7 @@ impl<const N: usize, Dst, R> TypeErasedSendFn<N, Dst, R> {
     ///
     /// # Panics
     /// If the function is larger than the available buffer size.
-    pub fn new<F: FnOnce(&mut Dst) -> R + Send>(f: F) -> Self {
+    pub fn new<F: FnOnce(&mut Dst) -> R + Send + 'static>(f: F) -> Self {
         unsafe fn dispatcher<F: FnOnce(&mut Dst) -> R, Dst, R>(buf: *const (), dst: &mut Dst) -> R {
             let f = unsafe {
                 // SAFETY: We are assured that we're reading the correct type, by construction

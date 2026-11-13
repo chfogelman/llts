@@ -110,7 +110,7 @@ impl Hub for TimerTestHub {
         self.now.get()
     }
 
-    fn start_timer<Event: Copy>(&self, event: Event, duration: std::time::Duration) {
+    fn start_timer<Event: Copy + 'static>(&self, event: Event, duration: std::time::Duration) {
         self.timers.start_timer(event, self.now() + duration)
     }
 

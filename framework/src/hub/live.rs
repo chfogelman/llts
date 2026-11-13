@@ -57,7 +57,7 @@ impl<P: Pipeline> Hub for LiveHub<P> {
         SystemTime::now()
     }
 
-    fn start_timer<Event: Copy>(&self, event: Event, duration: std::time::Duration) {
+    fn start_timer<Event: Copy + 'static>(&self, event: Event, duration: std::time::Duration) {
         self.timer_manager.start_timer(event, self.now() + duration);
     }
 

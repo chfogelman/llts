@@ -59,6 +59,7 @@ impl<const N: usize, const E: u8, const M: usize> std::convert::From<&[u8; M]> f
     }
 }
 
+#[allow(clippy::try_from_instead_of_from_str)]
 impl<const N: usize, const E: u8> std::convert::TryFrom<&str> for FixedString<N, E> {
     type Error = LengthError;
 

@@ -136,9 +136,9 @@ pub struct Sender<T> {
     queue: QueueBuf<T>,
 
     // Important not only that there is only one sender, but also that it is not accidentally
-    // shared between threads. `usize` is Send but not Sync, so it's appropriate to prevent
+    // shared between threads. `Cell` is Send but not Sync, so it's appropriate to prevent
     // automatic `Sync` implementation
-    _unsync: PhantomData<usize>,
+    _unsync: PhantomData<Cell<usize>>,
 }
 
 impl<T> Sender<T> {
